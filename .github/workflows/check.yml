@@ -1,0 +1,282 @@
+name: ROS 2 ABI Check
+
+# Reusable workflow that builds a ROS 2 package twice (PR target branch + PR
+# head) in the matching distro container, then delegates the ABI diff to
+# fujitatomoya/libabigail-action via this repo's composite action. REP-0009
+# policy is applied automatically from the PR's target branch.
+#
+# Consumers call it like:
+#
+#   jobs:
+#     abi:
+#       uses: fujitatomoya/ros2-abi-action/.github/workflows/check.yml@v1
+#       with:
+#         package: rclcpp
+#         soname: librclcpp.so
+#         suppressions: .abignore
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: 'Colcon package name to build (e.g. rclcpp).'
+        required: true
+        type: string
+      soname:
+        description: 'Library file name or glob (e.g. librclcpp.so or lib*.so).'
+        required: true
+        type: string
+      distro:
+        description: 'auto (derive from PR target branch) or explicit distro.'
+        required: false
+        type: string
+        default: 'auto'
+      suppressions:
+        description: 'Path to a suppression file relative to the repo root.'
+        required: false
+        type: string
+        default: ''
+      policy:
+        description: 'auto | strict (fail on break) | advisory (warn only).'
+        required: false
+        type: string
+        default: 'auto'
+      upstream-workspace:
+        description: 'Path to a .repos file for additional source dependencies.'
+        required: false
+        type: string
+        default: ''
+      comment-pr:
+        description: 'Post / update a sticky comment on the pull request.'
+        required: false
+        type: boolean
+        default: true
+      label-compat:
+        description: 'Label applied when ABI is compatible / additions-only.'
+        required: false
+        type: string
+        default: 'ABI compatible'
+      label-break:
+        description: 'Label applied when ABI is incompatible.'
+        required: false
+        type: string
+        default: 'ABI break'
+      image-prefix:
+        description: 'Container image repository prefix (<prefix>:<distro>).'
+        required: false
+        type: string
+        default: 'docker.io/tomoyafujita/ros2dev'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve distro -> container image and policy -> fail-on once, up front.
+  # ---------------------------------------------------------------------------
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      distro: ${{ steps.distro.outputs.distro }}
+      image: ${{ steps.distro.outputs.image }}
+      policy: ${{ steps.policy.outputs.policy }}
+      fail-on: ${{ steps.policy.outputs.fail-on }}
+    steps:
+      - name: Determine this action's ref
+        run: echo "ACTION_REF=${GITHUB_WORKFLOW_REF##*@}" >> "$GITHUB_ENV"
+
+      - name: Checkout ros2-abi-action
+        uses: actions/checkout@v4
+        with:
+          repository: fujitatomoya/ros2-abi-action
+          ref: ${{ env.ACTION_REF }}
+          path: ._ros2-abi-action
+
+      - name: Resolve distro and image
+        id: distro
+        env:
+          INPUT_DISTRO: ${{ inputs.distro }}
+          IMAGE_PREFIX: ${{ inputs.image-prefix }}
+        run: bash ._ros2-abi-action/scripts/resolve-distro.sh
+
+      - name: Resolve policy
+        id: policy
+        env:
+          INPUT_POLICY: ${{ inputs.policy }}
+          DISTRO: ${{ steps.distro.outputs.distro }}
+        run: bash ._ros2-abi-action/scripts/resolve-policy.sh
+
+  # ---------------------------------------------------------------------------
+  # Build the package twice: against the PR target branch and the PR head.
+  # ---------------------------------------------------------------------------
+  build:
+    needs: resolve
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.resolve.outputs.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - side: base
+            ref: ${{ github.base_ref }}
+          - side: pr
+            ref: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Determine this action's ref
+        run: echo "ACTION_REF=${GITHUB_WORKFLOW_REF##*@}" >> "$GITHUB_ENV"
+
+      - name: Checkout ros2-abi-action
+        uses: actions/checkout@v4
+        with:
+          repository: fujitatomoya/ros2-abi-action
+          ref: ${{ env.ACTION_REF }}
+          path: ._ros2-abi-action
+
+      - name: Checkout package source (${{ matrix.side }} @ ${{ matrix.ref }})
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          path: ws/src/pkg
+          fetch-depth: 0
+
+      - name: Import upstream workspace (.repos)
+        if: inputs.upstream-workspace != ''
+        working-directory: ws
+        run: |
+          set -euo pipefail
+          vcs import src < "src/pkg/${{ inputs.upstream-workspace }}"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: abi-ccache-${{ needs.resolve.outputs.distro }}-${{ matrix.side }}-${{ hashFiles('ws/src/**/package.xml', 'ws/src/**/*.repos') }}
+          restore-keys: |
+            abi-ccache-${{ needs.resolve.outputs.distro }}-${{ matrix.side }}-
+
+      - name: Build
+        working-directory: ws
+        env:
+          PACKAGE: ${{ inputs.package }}
+          WORKSPACE: ${{ github.workspace }}/ws
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: bash "${{ github.workspace }}/._ros2-abi-action/scripts/colcon-build.sh"
+
+      - name: Locate built library/libraries
+        working-directory: ws
+        env:
+          SONAME: ${{ inputs.soname }}
+          SEARCH_DIR: install
+          COPY_TO: ${{ github.workspace }}/abi-artifacts/${{ matrix.side }}
+        run: bash "${{ github.workspace }}/._ros2-abi-action/scripts/locate-library.sh"
+
+      - name: Upload library artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lib-${{ matrix.side }}
+          path: abi-artifacts/${{ matrix.side }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Expand the soname glob into a matrix of concrete library file names.
+  # ---------------------------------------------------------------------------
+  collect:
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      libraries: ${{ steps.expand.outputs.libraries }}
+    steps:
+      - name: Determine this action's ref
+        run: echo "ACTION_REF=${GITHUB_WORKFLOW_REF##*@}" >> "$GITHUB_ENV"
+
+      - name: Checkout ros2-abi-action
+        uses: actions/checkout@v4
+        with:
+          repository: fujitatomoya/ros2-abi-action
+          ref: ${{ env.ACTION_REF }}
+          path: ._ros2-abi-action
+
+      - name: Download base libraries
+        uses: actions/download-artifact@v4
+        with:
+          name: lib-base
+          path: lib-base
+
+      - name: Expand library list
+        id: expand
+        env:
+          SONAME: '*'
+          SEARCH_DIR: lib-base
+          MODE: json
+        run: |
+          libs="$(bash ._ros2-abi-action/scripts/locate-library.sh)"
+          echo "libraries=$libs" >> "$GITHUB_OUTPUT"
+          echo "Libraries to diff: $libs"
+
+  # ---------------------------------------------------------------------------
+  # Diff each library; one job per matched library so per-library comments
+  # coexist and any incompatible library fails the workflow under strict policy.
+  # ---------------------------------------------------------------------------
+  diff:
+    needs: [resolve, build, collect]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        library: ${{ fromJSON(needs.collect.outputs.libraries) }}
+    steps:
+      - name: Determine this action's ref
+        run: echo "ACTION_REF=${GITHUB_WORKFLOW_REF##*@}" >> "$GITHUB_ENV"
+
+      - name: Checkout ros2-abi-action
+        uses: actions/checkout@v4
+        with:
+          repository: fujitatomoya/ros2-abi-action
+          ref: ${{ env.ACTION_REF }}
+          path: ._ros2-abi-action
+
+      - name: Checkout caller repo (for suppressions file)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: caller
+
+      - name: Download base library
+        uses: actions/download-artifact@v4
+        with:
+          name: lib-base
+          path: lib-base
+
+      - name: Download head library
+        uses: actions/download-artifact@v4
+        with:
+          name: lib-pr
+          path: lib-pr
+
+      - name: Resolve suppressions path
+        id: suppr
+        env:
+          SUPPRESSIONS: ${{ inputs.suppressions }}
+        run: |
+          path=""
+          if [[ -n "$SUPPRESSIONS" && -f "caller/$SUPPRESSIONS" ]]; then
+            path="caller/$SUPPRESSIONS"
+          fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+
+      - name: ABI diff for ${{ matrix.library }}
+        uses: ./._ros2-abi-action
+        with:
+          package: ${{ inputs.package }}
+          library: ${{ matrix.library }}
+          base-lib: lib-base/${{ matrix.library }}
+          head-lib: lib-pr/${{ matrix.library }}
+          distro: ${{ needs.resolve.outputs.distro }}
+          policy: ${{ needs.resolve.outputs.policy }}
+          suppressions: ${{ steps.suppr.outputs.path }}
+          comment-pr: ${{ inputs.comment-pr }}
+          label-compat: ${{ inputs.label-compat }}
+          label-break: ${{ inputs.label-break }}

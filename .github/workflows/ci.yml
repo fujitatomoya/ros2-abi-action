@@ -1,0 +1,149 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Static checks on the shell scripts.
+  # ---------------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck scripts/*.sh
+
+  # ---------------------------------------------------------------------------
+  # Unit-test the distro/policy resolution logic.
+  # ---------------------------------------------------------------------------
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: distro=auto derives from base ref
+        env:
+          INPUT_DISTRO: auto
+          GITHUB_BASE_REF: jazzy
+        run: |
+          out="$(bash scripts/resolve-distro.sh)"
+          echo "$out"
+          echo "$out" | grep -q "Resolved distro: jazzy"
+      - name: explicit distro wins
+        env:
+          INPUT_DISTRO: humble
+          GITHUB_BASE_REF: rolling
+        run: |
+          bash scripts/resolve-distro.sh | grep -q "Resolved distro: humble"
+      - name: unsupported distro fails
+        env:
+          INPUT_DISTRO: bogus
+        run: |
+          if bash scripts/resolve-distro.sh; then
+            echo "expected failure for unsupported distro"; exit 1
+          fi
+      - name: rolling -> advisory -> fail-on none
+        env:
+          INPUT_POLICY: auto
+          DISTRO: rolling
+        run: |
+          out="$(bash scripts/resolve-policy.sh)"
+          echo "$out"
+          echo "$out" | grep -q "Resolved policy:  advisory"
+          echo "$out" | grep -q "Resolved fail-on: none"
+      - name: released distro -> strict -> fail-on incompatible
+        env:
+          INPUT_POLICY: auto
+          DISTRO: humble
+        run: |
+          out="$(bash scripts/resolve-policy.sh)"
+          echo "$out"
+          echo "$out" | grep -q "Resolved policy:  strict"
+          echo "$out" | grep -q "Resolved fail-on: incompatible"
+      - name: lyrical (released) -> strict -> fail-on incompatible
+        env:
+          INPUT_POLICY: auto
+          DISTRO: lyrical
+        run: |
+          out="$(bash scripts/resolve-policy.sh)"
+          echo "$out"
+          echo "$out" | grep -q "Resolved policy:  strict"
+          echo "$out" | grep -q "Resolved fail-on: incompatible"
+
+  # ---------------------------------------------------------------------------
+  # End-to-end self-test of the composite action against the toy fixture.
+  # Builds the toy library three ways and checks the verdict / fail behaviour.
+  # ---------------------------------------------------------------------------
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build toy libraries (baseline / additions / breaking)
+        working-directory: test/fixtures/toy-ros-pkg
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          g++ -g -Og -fPIC -shared -Iinclude src/counter.cpp \
+            -o out/base.so
+          g++ -g -Og -fPIC -shared -Iinclude -DADD_SYMBOL src/counter.cpp \
+            -o out/additions.so
+          g++ -g -Og -fPIC -shared -Iinclude -DBREAK_ABI src/counter.cpp \
+            -o out/breaking.so
+
+      - name: Additions under strict policy -> additions-only, passes
+        id: additions
+        uses: ./
+        with:
+          package: toy-additions
+          library: libtoy_ros_pkg.so
+          base-lib: test/fixtures/toy-ros-pkg/out/base.so
+          head-lib: test/fixtures/toy-ros-pkg/out/additions.so
+          policy: strict
+          comment-pr: 'false'
+
+      - name: Assert additions-only
+        run: |
+          echo "verdict=${{ steps.additions.outputs.verdict }}"
+          [[ "${{ steps.additions.outputs.verdict }}" == "additions-only" ]]
+
+      - name: Breaking under advisory policy -> incompatible, passes
+        id: advisory
+        uses: ./
+        with:
+          package: toy-advisory
+          library: libtoy_ros_pkg.so
+          base-lib: test/fixtures/toy-ros-pkg/out/base.so
+          head-lib: test/fixtures/toy-ros-pkg/out/breaking.so
+          policy: advisory
+          comment-pr: 'false'
+
+      - name: Assert incompatible (advisory did not fail)
+        run: |
+          echo "verdict=${{ steps.advisory.outputs.verdict }}"
+          [[ "${{ steps.advisory.outputs.verdict }}" == "incompatible" ]]
+
+      - name: Breaking under strict policy -> should fail the step
+        id: strict
+        continue-on-error: true
+        uses: ./
+        with:
+          package: toy-strict
+          library: libtoy_ros_pkg.so
+          base-lib: test/fixtures/toy-ros-pkg/out/base.so
+          head-lib: test/fixtures/toy-ros-pkg/out/breaking.so
+          policy: strict
+          comment-pr: 'false'
+
+      - name: Assert strict policy failed on the break
+        run: |
+          echo "outcome=${{ steps.strict.outcome }}"
+          echo "verdict=${{ steps.strict.outputs.verdict }}"
+          [[ "${{ steps.strict.outcome }}" == "failure" ]]
+          [[ "${{ steps.strict.outputs.verdict }}" == "incompatible" ]]

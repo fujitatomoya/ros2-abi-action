@@ -1,0 +1,55 @@
+name: Build ABI container images
+
+# Builds the self-contained, abidiff-ready ABI images from containers/*.Dockerfile
+# and publishes them to GHCR. Rebuilt weekly so they track upstream osrf/ros and
+# ros2dev updates. The action itself defaults to the upstream ros2dev images, so
+# these GHCR images are an optional optimization (abidiff baked in).
+
+on:
+  schedule:
+    # Every Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'containers/**'
+      - '.github/workflows/build-images.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [humble, jazzy, kilted, lyrical, rolling]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lower-case owner
+        id: owner
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.distro }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/${{ matrix.distro }}.Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          pull: true
+          tags: ghcr.io/${{ steps.owner.outputs.owner }}/ros-abi:${{ matrix.distro }}

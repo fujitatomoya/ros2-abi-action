@@ -1,0 +1,126 @@
+name: 'ROS 2 ABI check (diff)'
+description: >-
+  ROS-aware single-library ABI diff: resolves REP-0009 policy, merges the
+  default ROS suppression spec with the repository's own, and delegates the
+  actual diff to fujitatomoya/libabigail-action. For the full build-twice +
+  multi-library orchestration, use the reusable workflow
+  (.github/workflows/check.yml) instead.
+author: 'fujitatomoya'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  package:
+    description: 'Colcon package name the library belongs to (used in the report).'
+    required: true
+  library:
+    description: 'Resolved library file name being diffed (e.g. librclcpp.so).'
+    required: true
+  base-lib:
+    description: 'Path to the baseline shared library (built with -g).'
+    required: true
+  head-lib:
+    description: 'Path to the PR-built shared library (built with -g).'
+    required: true
+  distro:
+    description: 'Resolved ROS 2 distro; used to derive policy when policy=auto.'
+    required: false
+    default: ''
+  policy:
+    description: 'auto | strict (fail on break) | advisory (warn only).'
+    required: false
+    default: 'auto'
+  suppressions:
+    description: 'Path to a per-repo suppression file (merged with the ROS default).'
+    required: false
+    default: ''
+  comment-pr:
+    description: 'Post / update a sticky comment on the pull request.'
+    required: false
+    default: 'true'
+  label-compat:
+    description: 'Label applied when the verdict is compatible or additions-only.'
+    required: false
+    default: 'ABI compatible'
+  label-break:
+    description: 'Label applied when the verdict is incompatible.'
+    required: false
+    default: 'ABI break'
+  marker-suffix:
+    description: 'Sticky-comment marker suffix; defaults to the library name so multiple libraries coexist.'
+    required: false
+    default: ''
+  github-token:
+    description: 'Token used to read/write PR comments and labels.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  verdict:
+    description: 'compatible | additions-only | incompatible | error.'
+    value: ${{ steps.diff.outputs.verdict }}
+  summary:
+    description: 'One-line human-readable verdict summary.'
+    value: ${{ steps.diff.outputs.summary }}
+  exit-code:
+    description: 'Raw abidiff bitmap exit code.'
+    value: ${{ steps.diff.outputs.exit-code }}
+  report:
+    description: 'Path to the full abidiff text report.'
+    value: ${{ steps.diff.outputs.report }}
+  policy:
+    description: 'Resolved policy (strict | advisory).'
+    value: ${{ steps.policy.outputs.policy }}
+  fail-on:
+    description: 'Resolved libabigail fail-on severity.'
+    value: ${{ steps.policy.outputs.fail-on }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve policy
+      id: policy
+      shell: bash
+      env:
+        INPUT_POLICY: ${{ inputs.policy }}
+        DISTRO: ${{ inputs.distro }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/resolve-policy.sh"
+
+    - name: Merge suppressions
+      id: suppr
+      shell: bash
+      env:
+        DEFAULT_SUPPRESSIONS: ${{ github.action_path }}/suppressions/ros-default.abignore
+        REPO_SUPPRESSIONS: ${{ inputs.suppressions }}
+        OUTPUT: ${{ runner.temp }}/ros2-abi-suppressions.txt
+      run: bash "$GITHUB_ACTION_PATH/scripts/merge-suppressions.sh"
+
+    - name: Compute marker suffix
+      id: marker
+      shell: bash
+      env:
+        MARKER_SUFFIX: ${{ inputs.marker-suffix }}
+        LIBRARY: ${{ inputs.library }}
+      run: |
+        suffix="${MARKER_SUFFIX:-}"
+        if [[ -z "$suffix" ]]; then
+          # Derive a stable, comment-marker-safe suffix from the library name.
+          suffix="abi-$(echo "$LIBRARY" | tr -c 'A-Za-z0-9._-' '-')"
+        fi
+        echo "marker-suffix=$suffix" >> "$GITHUB_OUTPUT"
+
+    - name: Diff ABI (libabigail-action)
+      id: diff
+      uses: fujitatomoya/libabigail-action@v1
+      with:
+        base-lib: ${{ inputs.base-lib }}
+        head-lib: ${{ inputs.head-lib }}
+        suppressions: ${{ steps.suppr.outputs.suppressions }}
+        fail-on: ${{ steps.policy.outputs.fail-on }}
+        comment-pr: ${{ inputs.comment-pr }}
+        label-compat: ${{ inputs.label-compat }}
+        label-break: ${{ inputs.label-break }}
+        report-name: abidiff-${{ inputs.package }}-${{ inputs.library }}
+        marker-suffix: ${{ steps.marker.outputs.marker-suffix }}
+        github-token: ${{ inputs.github-token }}

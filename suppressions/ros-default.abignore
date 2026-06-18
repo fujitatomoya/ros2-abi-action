@@ -1,0 +1,46 @@
+# ros2-abi-action — default ROS 2 suppression spec
+#
+# Opinionated suppressions for ABI deltas that are commonly noisy in ROS 2
+# shared libraries but are not meaningful public-ABI breaks. This file is merged
+# with the consumer repository's own suppression file (e.g. .abignore) when both
+# exist; see "Suppressions" in the README.
+#
+# Format: libabigail suppression specification.
+#   man libabigail-suppr-spec
+#   https://sourceware.org/libabigail/manual/libabigail-concepts.html#suppression-specifications
+#
+# Keep this list conservative: every entry here hides a potential break from
+# every consuming repository, so only suppress patterns that are genuinely
+# benign implementation/template churn.
+
+# ---------------------------------------------------------------------------
+# C++ standard library template instantiation churn.
+# These types are not part of any ROS package's public ABI; changes to their
+# internal layout come from the toolchain/libstdc++, not from the package.
+# ---------------------------------------------------------------------------
+[suppress_type]
+  name_regexp = ^std::
+
+[suppress_function]
+  name_regexp = ^std::
+
+[suppress_variable]
+  name_regexp = ^std::
+
+# ---------------------------------------------------------------------------
+# Internal/private symbols. Names mangled into the ::detail / ::impl namespaces
+# (or leading-underscore reserved names) are implementation details, not API.
+# ---------------------------------------------------------------------------
+[suppress_type]
+  name_regexp = (^|::)(detail|impl|internal)::
+
+[suppress_function]
+  name_regexp = (^|::)(detail|impl|internal)::
+
+# ---------------------------------------------------------------------------
+# Third-party symbols that occasionally leak into a package's DWARF
+# (e.g. fmt, spdlog, tinyxml2). Their churn is owned upstream, not by ROS.
+# Uncomment / extend per repository if these become noisy.
+# ---------------------------------------------------------------------------
+# [suppress_type]
+#   name_regexp = ^(fmt|spdlog|tinyxml2)::
