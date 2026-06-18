@@ -112,7 +112,9 @@ runs:
 
     - name: Diff ABI (libabigail-action)
       id: diff
-      uses: fujitatomoya/libabigail-action@v1
+      # libabigail-action has no v1 yet; v0 is its floating major tag
+      # (currently -> v0.1.1). Bump when a v1 is published.
+      uses: fujitatomoya/libabigail-action@v0
       with:
         base-lib: ${{ inputs.base-lib }}
         head-lib: ${{ inputs.head-lib }}

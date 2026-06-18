@@ -239,38 +239,6 @@ release.
 
 ---
 
-## Repository layout
-
-```
-ros2-abi-action/
-├── action.yml                 # composite action (single-library diff)
-├── README.md
-├── LICENSE
-├── .github/workflows/
-│   ├── check.yml              # reusable workflow consumers call
-│   ├── build-images.yml       # weekly container builds (GHCR)
-│   └── ci.yml                 # self-test
-├── containers/
-│   ├── humble.Dockerfile
-│   ├── jazzy.Dockerfile
-│   ├── kilted.Dockerfile
-│   ├── lyrical.Dockerfile
-│   └── rolling.Dockerfile
-├── scripts/
-│   ├── resolve-distro.sh
-│   ├── resolve-policy.sh
-│   ├── colcon-build.sh
-│   ├── locate-library.sh
-│   └── merge-suppressions.sh
-├── suppressions/
-│   └── ros-default.abignore   # opinionated ROS default, merged with .abignore
-└── test/
-    └── fixtures/
-        └── toy-ros-pkg/       # minimal pkg with a macro-toggled ABI break
-```
-
----
-
 ## Non-goals
 
 - Source-level API compatibility — libabigail is binary ABI only.

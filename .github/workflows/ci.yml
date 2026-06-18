@@ -30,16 +30,18 @@ jobs:
       - name: distro=auto derives from base ref
         env:
           INPUT_DISTRO: auto
-          GITHUB_BASE_REF: jazzy
         run: |
+          # GITHUB_* env vars are reserved and ignored when set via env:,
+          # so export the base ref inside the shell for the child process.
+          export GITHUB_BASE_REF=jazzy
           out="$(bash scripts/resolve-distro.sh)"
           echo "$out"
           echo "$out" | grep -q "Resolved distro: jazzy"
       - name: explicit distro wins
         env:
           INPUT_DISTRO: humble
-          GITHUB_BASE_REF: rolling
         run: |
+          export GITHUB_BASE_REF=rolling
           bash scripts/resolve-distro.sh | grep -q "Resolved distro: humble"
       - name: unsupported distro fails
         env:
