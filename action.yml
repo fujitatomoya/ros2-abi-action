@@ -1,10 +1,5 @@
 name: 'ROS 2 ABI check (diff)'
-description: >-
-  ROS-aware single-library ABI diff: resolves REP-0009 policy, merges the
-  default ROS suppression spec with the repository's own, and delegates the
-  actual diff to fujitatomoya/libabigail-action. For the full build-twice +
-  multi-library orchestration, use the reusable workflow
-  (.github/workflows/check.yml) instead.
+description: 'ROS-aware single-library ABI diff: resolve REP-0009 policy, merge ROS suppressions, delegate to libabigail-action.'
 author: 'fujitatomoya'
 branding:
   icon: 'shield'
