@@ -84,14 +84,11 @@ jobs:
       policy: ${{ steps.policy.outputs.policy }}
       fail-on: ${{ steps.policy.outputs.fail-on }}
     steps:
-      - name: Determine this action's ref
-        run: echo "ACTION_REF=${GITHUB_WORKFLOW_REF##*@}" >> "$GITHUB_ENV"
-
       - name: Checkout ros2-abi-action
         uses: actions/checkout@v4
         with:
           repository: fujitatomoya/ros2-abi-action
-          ref: ${{ env.ACTION_REF }}
+          ref: ${{ github.job_workflow_sha }}
           path: ._ros2-abi-action
 
       - name: Resolve distro and image
@@ -125,14 +122,11 @@ jobs:
           - side: pr
             ref: ${{ github.event.pull_request.head.sha }}
     steps:
-      - name: Determine this action's ref
-        run: echo "ACTION_REF=${GITHUB_WORKFLOW_REF##*@}" >> "$GITHUB_ENV"
-
       - name: Checkout ros2-abi-action
         uses: actions/checkout@v4
         with:
           repository: fujitatomoya/ros2-abi-action
-          ref: ${{ env.ACTION_REF }}
+          ref: ${{ github.job_workflow_sha }}
           path: ._ros2-abi-action
 
       - name: Checkout package source (${{ matrix.side }} @ ${{ matrix.ref }})
@@ -189,14 +183,11 @@ jobs:
     outputs:
       libraries: ${{ steps.expand.outputs.libraries }}
     steps:
-      - name: Determine this action's ref
-        run: echo "ACTION_REF=${GITHUB_WORKFLOW_REF##*@}" >> "$GITHUB_ENV"
-
       - name: Checkout ros2-abi-action
         uses: actions/checkout@v4
         with:
           repository: fujitatomoya/ros2-abi-action
-          ref: ${{ env.ACTION_REF }}
+          ref: ${{ github.job_workflow_sha }}
           path: ._ros2-abi-action
 
       - name: Download base libraries
@@ -228,14 +219,11 @@ jobs:
       matrix:
         library: ${{ fromJSON(needs.collect.outputs.libraries) }}
     steps:
-      - name: Determine this action's ref
-        run: echo "ACTION_REF=${GITHUB_WORKFLOW_REF##*@}" >> "$GITHUB_ENV"
-
       - name: Checkout ros2-abi-action
         uses: actions/checkout@v4
         with:
           repository: fujitatomoya/ros2-abi-action
-          ref: ${{ env.ACTION_REF }}
+          ref: ${{ github.job_workflow_sha }}
           path: ._ros2-abi-action
 
       - name: Checkout caller repo (for suppressions file)
