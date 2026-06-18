@@ -155,17 +155,22 @@ jobs:
         working-directory: ws
         env:
           PACKAGE: ${{ inputs.package }}
-          WORKSPACE: ${{ github.workspace }}/ws
-          CCACHE_DIR: ${{ github.workspace }}/.ccache
-        run: bash "${{ github.workspace }}/._ros2-abi-action/scripts/colcon-build.sh"
+        run: |
+          # In container jobs ${{ github.workspace }} is the host path, but the
+          # workspace is mounted at $GITHUB_WORKSPACE inside the container, so
+          # always resolve paths through $GITHUB_WORKSPACE here.
+          export WORKSPACE="$GITHUB_WORKSPACE/ws"
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          bash "$GITHUB_WORKSPACE/._ros2-abi-action/scripts/colcon-build.sh"
 
       - name: Locate built library/libraries
         working-directory: ws
         env:
           SONAME: ${{ inputs.soname }}
           SEARCH_DIR: install
-          COPY_TO: ${{ github.workspace }}/abi-artifacts/${{ matrix.side }}
-        run: bash "${{ github.workspace }}/._ros2-abi-action/scripts/locate-library.sh"
+        run: |
+          export COPY_TO="$GITHUB_WORKSPACE/abi-artifacts/${{ matrix.side }}"
+          bash "$GITHUB_WORKSPACE/._ros2-abi-action/scripts/locate-library.sh"
 
       - name: Upload library artifact
         uses: actions/upload-artifact@v4
