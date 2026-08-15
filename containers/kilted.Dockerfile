@@ -1,7 +1,7 @@
 # kilted.Dockerfile
 #
 # Self-contained ABI image for ROS 2 Kilted. See humble.Dockerfile for details.
-FROM docker.io/tomoyafujita/ros2dev:kilted
+FROM docker.io/library/ros:kilted
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       abigail-tools \
