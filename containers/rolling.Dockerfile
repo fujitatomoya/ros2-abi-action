@@ -1,7 +1,7 @@
 # rolling.Dockerfile
 #
 # Self-contained ABI image for ROS 2 Rolling. See humble.Dockerfile for details.
-FROM docker.io/tomoyafujita/ros2dev:rolling
+FROM docker.io/library/ros:rolling
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       abigail-tools \

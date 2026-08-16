@@ -1,7 +1,7 @@
 # jazzy.Dockerfile
 #
 # Self-contained ABI image for ROS 2 Jazzy. See humble.Dockerfile for details.
-FROM docker.io/tomoyafujita/ros2dev:jazzy
+FROM docker.io/library/ros:jazzy
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       abigail-tools \

@@ -97,31 +97,34 @@ flowchart LR
 | `comment-pr` | no | `true` | Post / update the sticky PR comment. |
 | `label-compat` | no | `ABI compatible` | Label applied when compatible / additions-only. |
 | `label-break` | no | `ABI break` | Label applied when incompatible. |
-| `image-prefix` | no | `docker.io/tomoyafujita/ros2dev` | Container image repository prefix (`<prefix>:<distro>`). |
+| `image-prefix` | no | `ghcr.io/fujitatomoya/ros-abi` | Container image repository prefix (`<prefix>:<distro>`). |
 
 ---
 
 ## Distro → container map
 
 The container image is `<image-prefix>:<distro>`. The default prefix points at
-the full ROS 2 development images published from
-[`ros2_devenv_builder`](https://github.com/fujitatomoya/ros2_devenv_builder),
-which already have every `rosdep` dependency installed so a single package can
-be built from source quickly.
+the `ros-abi` images built weekly from [`containers/`](containers/) by
+[`build-images.yml`](.github/workflows/build-images.yml): the official
+`ros:<distro>` base (binary underlay at `/opt/ros`, colcon, rosdep) plus
+`ccache` and `abigail-tools`. Missing package dependencies are installed by
+`rosdep` at build time.
 
 | Distro | Default image |
 | --- | --- |
-| `humble` | `docker.io/tomoyafujita/ros2dev:humble` |
-| `jazzy` | `docker.io/tomoyafujita/ros2dev:jazzy` |
-| `kilted` | `docker.io/tomoyafujita/ros2dev:kilted` |
-| `lyrical` | `docker.io/tomoyafujita/ros2dev:lyrical` |
-| `rolling` | `docker.io/tomoyafujita/ros2dev:rolling` |
+| `humble` | `ghcr.io/fujitatomoya/ros-abi:humble` |
+| `jazzy` | `ghcr.io/fujitatomoya/ros-abi:jazzy` |
+| `kilted` | `ghcr.io/fujitatomoya/ros-abi:kilted` |
+| `lyrical` | `ghcr.io/fujitatomoya/ros-abi:lyrical` |
+| `rolling` | `ghcr.io/fujitatomoya/ros-abi:rolling` |
 
 `abidiff` itself is **not** required in the build image — the diff runs on the
-host runner, where `libabigail-action` installs it. The optional, slimmer
-`abidiff`-ready images in [`containers/`](containers/) are built weekly by
-[`build-images.yml`](.github/workflows/build-images.yml) and published to
-`ghcr.io/<owner>/ros-abi:<distro>`; point `image-prefix` at them to opt in.
+host runner, where `libabigail-action` installs it. Any image with (or able to
+rosdep-install) a `/opt/ros/<distro>` underlay works: the official
+`docker.io/library/ros` images work as-is, and the
+[`ros2dev`](https://github.com/fujitatomoya/ros2_devenv_builder) development
+images remain useful as an opt-in during Ubuntu-transition bootstrap windows
+when the official `rolling` image lags behind.
 
 ---
 

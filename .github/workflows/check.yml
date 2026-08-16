@@ -65,7 +65,7 @@ on:
         description: 'Container image repository prefix (<prefix>:<distro>).'
         required: false
         type: string
-        default: 'docker.io/tomoyafujita/ros2dev'
+        default: 'ghcr.io/fujitatomoya/ros-abi'
 
 permissions:
   contents: read
@@ -155,6 +155,7 @@ jobs:
         working-directory: ws
         env:
           PACKAGE: ${{ inputs.package }}
+          ROS_DISTRO: ${{ needs.resolve.outputs.distro }}
         run: |
           # In container jobs ${{ github.workspace }} is the host path, but the
           # workspace is mounted at $GITHUB_WORKSPACE inside the container, so

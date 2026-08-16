@@ -1,7 +1,7 @@
 # lyrical.Dockerfile
 #
 # Self-contained ABI image for ROS 2 Lyrical. See humble.Dockerfile for details.
-FROM docker.io/tomoyafujita/ros2dev:lyrical
+FROM docker.io/library/ros:lyrical
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       abigail-tools \

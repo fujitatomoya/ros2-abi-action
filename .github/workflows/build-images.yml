@@ -1,9 +1,9 @@
 name: Build ABI container images
 
 # Builds the self-contained, abidiff-ready ABI images from containers/*.Dockerfile
-# and publishes them to GHCR. Rebuilt weekly so they track upstream osrf/ros and
-# ros2dev updates. The action itself defaults to the upstream ros2dev images, so
-# these GHCR images are an optional optimization (abidiff baked in).
+# and publishes them to GHCR. Rebuilt weekly so they track the upstream official
+# ros:<distro> images. These GHCR images are the action's default distro ->
+# container map (see check.yml's image-prefix input).
 
 on:
   schedule:

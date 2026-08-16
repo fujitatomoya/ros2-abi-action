@@ -13,7 +13,7 @@
 #   INPUT_DISTRO    Explicit distro, or "auto"/"" to derive from the base ref.
 #   GITHUB_BASE_REF Pull request target branch (set by GitHub on PR events).
 #   IMAGE_PREFIX    Container image repository prefix.
-#                   Default: docker.io/tomoyafujita/ros2dev
+#                   Default: ghcr.io/fujitatomoya/ros-abi
 #
 # Outputs (written to $GITHUB_OUTPUT when set, always echoed):
 #   distro          Resolved distro name.
@@ -26,7 +26,7 @@ set -euo pipefail
 KNOWN_DISTROS=(humble jazzy kilted lyrical rolling)
 
 INPUT_DISTRO="${INPUT_DISTRO:-auto}"
-IMAGE_PREFIX="${IMAGE_PREFIX:-docker.io/tomoyafujita/ros2dev}"
+IMAGE_PREFIX="${IMAGE_PREFIX:-ghcr.io/fujitatomoya/ros-abi}"
 
 normalize() {
   # Strip a leading refs/heads/ or refs/tags/ and lower-case the result.
