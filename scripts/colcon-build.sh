@@ -50,8 +50,13 @@ for candidate in \
   "/root/setup_ws/install/setup.bash" \
   "/root/ros2_ws/install/setup.bash"; do
   if [[ -n "$candidate" && -f "$candidate" ]]; then
+    # ROS setup scripts reference variables that may be unset
+    # (AMENT_TRACE_SETUP_FILES, COLCON_TRACE, ...), so relax nounset around
+    # the source or it aborts under this script's set -u.
+    set +u
     # shellcheck disable=SC1090
     source "$candidate"
+    set -u
     sourced="$candidate"
     echo "Sourced ROS environment: $candidate"
     break
