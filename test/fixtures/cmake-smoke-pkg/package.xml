@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<!--
+  Minimal plain-CMake colcon package (no ROS dependencies) used by ci.yml's
+  source-toolchain job to exercise colcon and containers/finalize-source-image.sh
+  on every base image of the source Dockerfiles in minutes.
+-->
+<package format="3">
+  <name>abi_smoke</name>
+  <version>0.0.1</version>
+  <description>Smoke-test package for the ros2-abi-action source toolchain.</description>
+  <maintainer email="tomoya.fujita825@gmail.com">Tomoya Fujita</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>cmake</buildtool_depend>
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package>
