@@ -21,6 +21,30 @@ name: ROS 2 ABI Check
 #       with:
 #         package: rclcpp rclcpp_action rclcpp_components rclcpp_lifecycle
 #         soname: 'lib*.so'
+#
+# ROS 2 core repositories develop against the source branches of their
+# dependencies, which are usually ahead of the released binaries. They must
+# use build-mode: source, which imports the distro's ros2.repos and builds
+# the PR against today's source tree (a nightly source-built underlay,
+# ros-abi:<distro>-source, caches whatever did not move since):
+#
+#       with:
+#         package: rclcpp rclcpp_action rclcpp_components rclcpp_lifecycle
+#         soname: 'lib*.so'
+#         build-mode: source
+#
+# Paired changes across repositories are declared by the PR author in the PR
+# description and are applied to the PR side of the build:
+#
+#   Depends-On: ros2/rcl#1234
+
+# Workflow-level constants shared by the jobs below.
+env:
+  # Incremental source builds keep the DDS vendors from the nightly image even
+  # when their repositories moved: rebuilding Fast DDS would dominate the run
+  # and has no bearing on the ABI of the packages under test. Scratch builds
+  # compile them like everything else.
+  SOURCE_SKIP_REGEX: '^(fastrtps|fastcdr|foonathan_memory_vendor|cyclonedds|iceoryx_.*)$'
 
 on:
   workflow_call:
@@ -42,6 +66,34 @@ on:
         required: false
         type: string
         default: 'auto'
+      build-mode:
+        description: >-
+          binary (default): build against the released ros-<distro> Debian
+          packages; right for downstream packages. source: import the distro's
+          ros2.repos and build against today's source tree; required for ROS 2
+          core repositories whose dependencies are ahead of the binaries.
+        required: false
+        type: string
+        default: 'binary'
+      source-strategy:
+        description: >-
+          Source mode only. incremental (default): recompile only the upstream
+          packages that moved since the nightly <image-prefix>:<distro>-source
+          image was built (plus their dependents and the targets), taking the
+          rest from the image. scratch: ignore the prebuilt underlay and compile
+          the whole dependency closure from source in the same image; slower,
+          no cache.
+        required: false
+        type: string
+        default: 'incremental'
+      related-prs:
+        description: >-
+          Additional related pull requests to apply on the PR side, as
+          "owner/repo#N" or PR URLs (whitespace or comma separated). Merged
+          with the "Depends-On:" lines parsed from the PR description.
+        required: false
+        type: string
+        default: ''
       suppressions:
         description: 'Path to a suppression file relative to the repo root.'
         required: false
@@ -91,9 +143,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       distro: ${{ steps.distro.outputs.distro }}
+      build-mode: ${{ steps.distro.outputs.build-mode }}
+      source-strategy: ${{ steps.distro.outputs.source-strategy }}
       image: ${{ steps.distro.outputs.image }}
       policy: ${{ steps.policy.outputs.policy }}
       fail-on: ${{ steps.policy.outputs.fail-on }}
+      related-prs: ${{ steps.related.outputs.related-prs }}
     steps:
       - name: Checkout ros2-abi-action
         uses: actions/checkout@v4
@@ -107,6 +162,8 @@ jobs:
         env:
           INPUT_DISTRO: ${{ inputs.distro }}
           IMAGE_PREFIX: ${{ inputs.image-prefix }}
+          BUILD_MODE: ${{ inputs.build-mode }}
+          SOURCE_STRATEGY: ${{ inputs.source-strategy }}
         run: bash ._ros2-abi-action/scripts/resolve-distro.sh
 
       - name: Resolve policy
@@ -115,6 +172,15 @@ jobs:
           INPUT_POLICY: ${{ inputs.policy }}
           DISTRO: ${{ steps.distro.outputs.distro }}
         run: bash ._ros2-abi-action/scripts/resolve-policy.sh
+
+      # The PR body is untrusted input: it is passed through the environment,
+      # never interpolated into a script, and only yields owner/repo#N tokens.
+      - name: Parse related pull requests (Depends-On)
+        id: related
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          RELATED_PRS_INPUT: ${{ inputs.related-prs }}
+        run: python3 ._ros2-abi-action/scripts/parse-related-prs.py
 
   # ---------------------------------------------------------------------------
   # Build the package(s) twice: against the PR target branch and the PR head.
@@ -154,19 +220,42 @@ jobs:
           set -euo pipefail
           vcs import src < "src/pkg/${{ inputs.upstream-workspace }}"
 
+      # Source mode: import the distro manifest (minus the repository under
+      # test, already at ws/src/pkg) and work out which upstream repositories
+      # moved since the underlay image was built. Both modes: check out the
+      # related PRs declared in the PR description, on the PR side only, so the
+      # base side stays the pre-PR world.
+      - name: Sync upstream sources and related pull requests
+        if: needs.resolve.outputs.build-mode == 'source' || (matrix.side == 'pr' && needs.resolve.outputs.related-prs != '')
+        id: sync
+        working-directory: ws
+        env:
+          MODE: ${{ needs.resolve.outputs.build-mode }}
+          STRATEGY: ${{ needs.resolve.outputs.source-strategy }}
+          EXCLUDE_REPO: ${{ github.repository }}
+          ROS_DISTRO: ${{ needs.resolve.outputs.distro }}
+          RELATED_PRS: ${{ matrix.side == 'pr' && needs.resolve.outputs.related-prs || '' }}
+        run: |
+          export WORKSPACE_SRC="$GITHUB_WORKSPACE/ws/src"
+          export DEST="$WORKSPACE_SRC/upstream"
+          python3 "$GITHUB_WORKSPACE/._ros2-abi-action/scripts/sync-upstream.py"
+
       - name: Restore ccache
         uses: actions/cache@v4
         with:
           path: .ccache
-          key: abi-ccache-${{ needs.resolve.outputs.distro }}-${{ matrix.side }}-${{ hashFiles('ws/src/**/package.xml', 'ws/src/**/*.repos') }}
+          key: abi-ccache-${{ needs.resolve.outputs.distro }}-${{ needs.resolve.outputs.build-mode }}-${{ matrix.side }}-${{ hashFiles('ws/src/**/package.xml', 'ws/src/**/*.repos') }}
           restore-keys: |
-            abi-ccache-${{ needs.resolve.outputs.distro }}-${{ matrix.side }}-
+            abi-ccache-${{ needs.resolve.outputs.distro }}-${{ needs.resolve.outputs.build-mode }}-${{ matrix.side }}-
 
       - name: Build
         working-directory: ws
         env:
           PACKAGE: ${{ inputs.package }}
           ROS_DISTRO: ${{ needs.resolve.outputs.distro }}
+          SOURCE_STRATEGY: ${{ needs.resolve.outputs.source-strategy }}
+          REBUILD_PATHS: ${{ steps.sync.outputs.rebuild-paths }}
+          PACKAGES_SKIP_REGEX: ${{ needs.resolve.outputs.build-mode == 'source' && needs.resolve.outputs.source-strategy == 'incremental' && env.SOURCE_SKIP_REGEX || '' }}
         run: |
           # In container jobs ${{ github.workspace }} is the host path, but the
           # workspace is mounted at $GITHUB_WORKSPACE inside the container, so
@@ -179,8 +268,16 @@ jobs:
         working-directory: ws
         env:
           SONAME: ${{ inputs.soname }}
-          SEARCH_DIR: install
+          PACKAGE: ${{ inputs.package }}
         run: |
+          # Only the packages under test are diffed. Dependencies that were
+          # rebuilt from source in this workspace (moved upstream repositories,
+          # Depends-On PRs, .repos imports) also live under install/ and must
+          # not be picked up by the soname glob, so search their install
+          # prefixes only (colcon's default isolated layout: install/<package>).
+          dirs=""
+          for p in $PACKAGE; do dirs="$dirs install/$p"; done
+          export SEARCH_DIR="${dirs# }"
           export COPY_TO="$GITHUB_WORKSPACE/abi-artifacts/${{ matrix.side }}"
           bash "$GITHUB_WORKSPACE/._ros2-abi-action/scripts/locate-library.sh"
 
