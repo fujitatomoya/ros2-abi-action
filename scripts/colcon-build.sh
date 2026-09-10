@@ -2,13 +2,16 @@
 #
 # colcon-build.sh
 #
-# Build a single colcon package (and everything it depends on) with debug info,
-# so that libabigail's abidiff has rich DWARF to compare. Intended to run inside
-# a ROS 2 container with a binary underlay (ros:<distro> or the ros-abi images);
-# missing dependencies are installed via rosdep before the build.
+# Build one or more colcon packages (and everything they depend on) with debug
+# info, so that libabigail's abidiff has rich DWARF to compare. Intended to run
+# inside a ROS 2 container with a binary underlay (ros:<distro> or the ros-abi
+# images); missing dependencies are installed via rosdep before the build.
 #
 # Inputs (environment):
-#   PACKAGE     Colcon package name to build (required).
+#   PACKAGE     Whitespace-separated colcon package name(s) to build (required),
+#               e.g. "rclcpp" or "rclcpp rclcpp_action rclcpp_lifecycle". All
+#               names are passed to a single --packages-up-to, so colcon builds
+#               the union of their dependency closures exactly once.
 #   WORKSPACE   Colcon workspace root (default: current directory).
 #   ROS_DISTRO  ROS distro, used to locate the system setup file (optional;
 #               most ROS containers already export it).
@@ -20,6 +23,15 @@ set -euo pipefail
 
 PACKAGE="${PACKAGE:?PACKAGE is required}"
 WORKSPACE="${WORKSPACE:-$PWD}"
+
+# Split PACKAGE on whitespace (spaces, tabs, newlines) into individual names.
+# Word splitting is intentional here; the names never contain glob characters.
+# shellcheck disable=SC2206
+PACKAGES=($PACKAGE)
+if [[ "${#PACKAGES[@]}" -eq 0 ]]; then
+  echo "::error::PACKAGE must contain at least one colcon package name." >&2
+  exit 1
+fi
 
 cd "$WORKSPACE"
 
@@ -74,11 +86,11 @@ if command -v ccache >/dev/null 2>&1; then
   CCACHE_ARGS+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
 fi
 
-echo "Building package '$PACKAGE' (with up-to dependencies) in $WORKSPACE"
+echo "Building package(s) '${PACKAGES[*]}' (with up-to dependencies) in $WORKSPACE"
 # BUILD_TESTING=OFF: only the shared library matters for the ABI diff, and
 # skipping tests avoids requiring every test_depend (ament_lint_*, fixtures).
 colcon build \
-  --packages-up-to "$PACKAGE" \
+  --packages-up-to "${PACKAGES[@]}" \
   --event-handlers console_direct+ \
   --cmake-args \
     -DCMAKE_BUILD_TYPE=Debug \
@@ -87,4 +99,4 @@ colcon build \
     -DCMAKE_CXX_FLAGS="-g -Og" \
     "${CCACHE_ARGS[@]}"
 
-echo "colcon build for '$PACKAGE' completed."
+echo "colcon build for '${PACKAGES[*]}' completed."
