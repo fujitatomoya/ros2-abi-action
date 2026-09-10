@@ -4,7 +4,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 ROS-aware ABI compliance checking for C/C++ shared libraries on every pull
-request. `ros2-abi-action` builds a ROS 2 package **twice** — once against the
+request. `ros2-abi-action` builds one or more ROS 2 packages **twice** — once against the
 PR's target branch and once against the PR head — in the matching distro
 container, then delegates the binary ABI diff to
 [`fujitatomoya/libabigail-action`](https://github.com/fujitatomoya/libabigail-action)
@@ -54,6 +54,16 @@ jobs:
 That is the entire integration burden per repo. The distro is derived from the
 PR's target branch; policy follows REP-0009.
 
+For a repository that contains several packages, list them all in `package`
+(space-separated) and use a `soname` glob. Everything is built once per side
+and each matched library is diffed in its own job:
+
+```yaml
+    with:
+      package: rclcpp rclcpp_action rclcpp_components rclcpp_lifecycle
+      soname: 'lib*.so'
+```
+
 ---
 
 ## How it works
@@ -73,8 +83,10 @@ flowchart LR
    `distro` input) and look up the container image; resolve the policy.
 2. **build** (matrix `base` + `pr`) — inside the distro container: check out the
    correct ref, optionally `vcs import` a `.repos` file, `rosdep install`, then
-   `colcon build --packages-up-to <package>` with `-DCMAKE_BUILD_TYPE=Debug`
-   and `-g -Og` so DWARF is present. The matched library/libraries are uploaded
+   `colcon build --packages-up-to <package...>` with `-DCMAKE_BUILD_TYPE=Debug`
+   and `-g -Og` so DWARF is present. When `package` lists several names, colcon
+   builds the union of their dependency closures in one invocation, so shared
+   dependencies are compiled once. The matched library/libraries are uploaded
    as the `lib-base` / `lib-pr` artifacts. `install/` builds are sped up with
    `ccache` keyed on `(distro, package.xml, .repos, side)`.
 3. **collect** — expand the `soname` glob into a concrete list of libraries.
@@ -88,7 +100,7 @@ flowchart LR
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `package` | yes | — | Colcon package name to build (e.g. `rclcpp`). |
+| `package` | yes | — | Colcon package name(s) to build. Space-separated for multi-package repos (e.g. `rclcpp rclcpp_action rclcpp_lifecycle`); built together via one `--packages-up-to`. |
 | `soname` | yes | — | Library file or glob (e.g. `librclcpp.so` or `lib*.so`). |
 | `distro` | no | `auto` | `auto` (derive from PR target branch) or explicit: `humble`, `jazzy`, `kilted`, `lyrical`, `rolling`, … |
 | `suppressions` | no | — | Path to a suppression file relative to the repo root. |
@@ -165,12 +177,33 @@ both exist. The format follows libabigail's suppression spec
 
 ---
 
-## Multi-library repos
+## Multi-package / multi-library repos
 
-`soname` accepts a glob (e.g. `lib*.so`). The action expands it and runs the
-diff **once per matched library**, each with its own sticky-comment marker so
-they coexist on a single PR. Per-library verdicts are combined: under strict
-policy, if **any** library is incompatible, the workflow fails.
+`package` accepts a space-separated list. Because `--packages-up-to` only
+builds the dependency closure of the named packages, sibling packages that
+merely share a common dependency (e.g. `rclcpp_action`, `rclcpp_components`
+and `rclcpp_lifecycle`, which each depend on `rclcpp` but not on each other)
+must all be listed for their libraries to appear in `install/`. Listing them
+builds the union of closures **once per side**; shared dependencies are not
+rebuilt per package.
+
+`soname` accepts a glob (e.g. `lib*.so`). The action expands it against the
+whole `install/` tree and runs the diff **once per matched library**, each with
+its own sticky-comment marker so they coexist on a single PR. Per-library
+verdicts are combined: under strict policy, if **any** library is incompatible,
+the workflow fails.
+
+For example, the `rclcpp` repository with
+`package: rclcpp rclcpp_action rclcpp_components rclcpp_lifecycle` and
+`soname: 'lib*.so'` yields one build per side and separate diff jobs for
+`librclcpp.so`, `librclcpp_action.so`, `librclcpp_lifecycle.so` and
+`libcomponent_manager.so` (test libraries are not built because the action sets
+`-DBUILD_TESTING=OFF`).
+
+Note that a single workflow file can call `check.yml` only once: the reusable
+workflow uploads its build artifacts under the fixed names `lib-base` / `lib-pr`
+which are shared across all jobs in a run, so two invocations would collide.
+Use the package list instead of multiple calls.
 
 ---
 

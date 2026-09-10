@@ -1,9 +1,9 @@
 name: ROS 2 ABI Check
 
-# Reusable workflow that builds a ROS 2 package twice (PR target branch + PR
-# head) in the matching distro container, then delegates the ABI diff to
-# fujitatomoya/libabigail-action via this repo's composite action. REP-0009
-# policy is applied automatically from the PR's target branch.
+# Reusable workflow that builds one or more ROS 2 packages twice (PR target
+# branch + PR head) in the matching distro container, then delegates the ABI
+# diff to fujitatomoya/libabigail-action via this repo's composite action.
+# REP-0009 policy is applied automatically from the PR's target branch.
 #
 # Consumers call it like:
 #
@@ -14,12 +14,23 @@ name: ROS 2 ABI Check
 #         package: rclcpp
 #         soname: librclcpp.so
 #         suppressions: .abignore
+#
+# Multi-package repositories list every package whose libraries should be
+# checked; they are built together in a single colcon invocation:
+#
+#       with:
+#         package: rclcpp rclcpp_action rclcpp_components rclcpp_lifecycle
+#         soname: 'lib*.so'
 
 on:
   workflow_call:
     inputs:
       package:
-        description: 'Colcon package name to build (e.g. rclcpp).'
+        description: >-
+          Colcon package name(s) to build. Space-separated for multi-package
+          repos (e.g. "rclcpp rclcpp_action rclcpp_lifecycle"); all names go
+          to one colcon --packages-up-to, so the union of their dependency
+          closures is built exactly once per side.
         required: true
         type: string
       soname:
@@ -106,7 +117,7 @@ jobs:
         run: bash ._ros2-abi-action/scripts/resolve-policy.sh
 
   # ---------------------------------------------------------------------------
-  # Build the package twice: against the PR target branch and the PR head.
+  # Build the package(s) twice: against the PR target branch and the PR head.
   # ---------------------------------------------------------------------------
   build:
     needs: resolve

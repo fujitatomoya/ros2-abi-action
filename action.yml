@@ -7,7 +7,7 @@ branding:
 
 inputs:
   package:
-    description: 'Colcon package name the library belongs to (used in the report).'
+    description: 'Colcon package name(s) the library belongs to (used in the report name; whitespace is sanitized).'
     required: true
   library:
     description: 'Resolved library file name being diffed (e.g. librclcpp.so).'
@@ -91,19 +91,27 @@ runs:
         OUTPUT: ${{ runner.temp }}/ros2-abi-suppressions.txt
       run: bash "$GITHUB_ACTION_PATH/scripts/merge-suppressions.sh"
 
-    - name: Compute marker suffix
+    - name: Compute marker suffix and report name
       id: marker
       shell: bash
       env:
         MARKER_SUFFIX: ${{ inputs.marker-suffix }}
+        PACKAGE: ${{ inputs.package }}
         LIBRARY: ${{ inputs.library }}
       run: |
         suffix="${MARKER_SUFFIX:-}"
         if [[ -z "$suffix" ]]; then
           # Derive a stable, comment-marker-safe suffix from the library name.
-          suffix="abi-$(echo "$LIBRARY" | tr -c 'A-Za-z0-9._-' '-')"
+          suffix="abi-$(printf '%s' "$LIBRARY" | tr -c 'A-Za-z0-9._-' '-')"
         fi
         echo "marker-suffix=$suffix" >> "$GITHUB_OUTPUT"
+
+        # The report name doubles as an artifact / file name, so it must not
+        # contain whitespace or other special characters. PACKAGE may be a
+        # space-separated list (e.g. "rclcpp rclcpp_action"), so squeeze every
+        # run of disallowed characters into a single '-'.
+        report="abidiff-$(printf '%s-%s' "$PACKAGE" "$LIBRARY" | tr -cs 'A-Za-z0-9._-' '-')"
+        echo "report-name=$report" >> "$GITHUB_OUTPUT"
 
     - name: Diff ABI (libabigail-action)
       id: diff
@@ -118,6 +126,6 @@ runs:
         comment-pr: ${{ inputs.comment-pr }}
         label-compat: ${{ inputs.label-compat }}
         label-break: ${{ inputs.label-break }}
-        report-name: abidiff-${{ inputs.package }}-${{ inputs.library }}
+        report-name: ${{ steps.marker.outputs.report-name }}
         marker-suffix: ${{ steps.marker.outputs.marker-suffix }}
         github-token: ${{ inputs.github-token }}

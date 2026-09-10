@@ -79,6 +79,53 @@ jobs:
           echo "$out" | grep -q "Resolved fail-on: incompatible"
 
   # ---------------------------------------------------------------------------
+  # Unit-test colcon-build.sh argument handling with a stub colcon on PATH
+  # (no ROS install needed: rosdep is absent, so the script skips it).
+  # ---------------------------------------------------------------------------
+  build-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stub colcon that records its arguments
+        run: |
+          mkdir -p "$RUNNER_TEMP/stub-bin"
+          cat > "$RUNNER_TEMP/stub-bin/colcon" <<'EOF'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > "${COLCON_ARGS_OUT:?}"
+          EOF
+          chmod +x "$RUNNER_TEMP/stub-bin/colcon"
+          echo "$RUNNER_TEMP/stub-bin" >> "$GITHUB_PATH"
+      - name: single package is passed through unchanged
+        env:
+          PACKAGE: rclcpp
+        run: |
+          export COLCON_ARGS_OUT="$RUNNER_TEMP/args-single.txt"
+          bash scripts/colcon-build.sh
+          # Args are one per line; --packages-up-to must be followed by exactly
+          # the one package and then the next flag.
+          tr '\n' ' ' < "$COLCON_ARGS_OUT" | \
+            grep -q -- '--packages-up-to rclcpp --event-handlers '
+      - name: space-separated list expands to multiple --packages-up-to names
+        env:
+          PACKAGE: 'rclcpp  rclcpp_action rclcpp_components rclcpp_lifecycle'
+        run: |
+          export COLCON_ARGS_OUT="$RUNNER_TEMP/args-multi.txt"
+          bash scripts/colcon-build.sh
+          cat "$COLCON_ARGS_OUT"
+          # The input deliberately has a double space; an unsplit single
+          # argument would keep it and fail to match this single-spaced pattern.
+          tr '\n' ' ' < "$COLCON_ARGS_OUT" | grep -q -- \
+            '--packages-up-to rclcpp rclcpp_action rclcpp_components rclcpp_lifecycle --event-handlers '
+      - name: whitespace-only package list fails
+        env:
+          PACKAGE: '   '
+        run: |
+          export COLCON_ARGS_OUT="$RUNNER_TEMP/args-empty.txt"
+          if bash scripts/colcon-build.sh; then
+            echo "expected failure for empty package list"; exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
   # End-to-end self-test of the composite action against the toy fixture.
   # Builds the toy library three ways and checks the verdict / fail behaviour.
   # ---------------------------------------------------------------------------
