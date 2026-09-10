@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: ShellCheck
-        run: shellcheck scripts/*.sh test/*.sh
+        run: shellcheck scripts/*.sh test/*.sh containers/*.sh
 
   # ---------------------------------------------------------------------------
   # Unit-test the distro/policy resolution logic.
@@ -267,6 +267,90 @@ jobs:
           if python3 scripts/sync-upstream.py; then
             echo "expected failure"; exit 1
           fi
+
+  # ---------------------------------------------------------------------------
+  # Smoke-test the source-image toolchain on every base image in minutes
+  # instead of hours: same locale / apt-source / ros-dev-tools setup as the
+  # containers/<distro>-source.Dockerfile files, a colcon build of a one-file
+  # CMake package with the same flags, then the same finalize script. Catches
+  # toolchain drift on a new Ubuntu release (Python, EmPy, colcon, coreutils)
+  # before the nightly image build hits it.
+  # ---------------------------------------------------------------------------
+  source-toolchain:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: humble
+            base: jammy
+          - distro: jazzy
+            base: noble
+          - distro: kilted
+            base: noble
+          - distro: lyrical
+            base: '26.04'
+          - distro: rolling
+            base: '26.04'
+    container:
+      image: docker.io/library/ubuntu:${{ matrix.base }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set locale and enable the ROS 2 apt repository (as the Dockerfiles do)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y locales software-properties-common curl ca-certificates
+          locale-gen en_US en_US.UTF-8
+          update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+          add-apt-repository -y universe
+          version="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest \
+            | grep -F '"tag_name"' | awk -F'"' '{print $4}')"
+          codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")"
+          curl -fsSL -o /tmp/ros2-apt-source.deb \
+            "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${version}/ros2-apt-source_${version}.${codename}_all.deb"
+          dpkg -i /tmp/ros2-apt-source.deb
+          apt-get update
+          apt-get install -y ros-dev-tools
+          echo "colcon: $(colcon version-check 2>/dev/null | head -1 || true)"
+          python3 --version
+      - name: colcon build a one-package workspace with the image's flags
+        env:
+          LANG: en_US.UTF-8
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ws/src"
+          cp -r test/fixtures/cmake-smoke-pkg "$RUNNER_TEMP/ws/src/"
+          cd "$RUNNER_TEMP/ws"
+          colcon build \
+            --base-paths src \
+            --continue-on-error \
+            --parallel-workers 2 \
+            --event-handlers console_cohesion+ \
+            --cmake-args \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DBUILD_TESTING=OFF \
+              -DCMAKE_C_FLAGS="-g -Og" \
+              -DCMAKE_CXX_FLAGS="-g -Og"
+          echo "--- install/:"; ls -la install
+      - name: finalize the workspace exactly like the source images do
+        env:
+          LANG: en_US.UTF-8
+        run: |
+          set -euo pipefail
+          out="$(bash containers/finalize-source-image.sh "$RUNNER_TEMP/ws")"
+          echo "$out"
+          echo "$out" | grep -qx 'Packages not built: 0'
+          [[ -f "$RUNNER_TEMP/ws/install/setup.bash" ]]
+          [[ -f "$RUNNER_TEMP/ws/install/abi_smoke/lib/libabi_smoke.so" ]]
+          [[ ! -e "$RUNNER_TEMP/ws/src" && ! -e "$RUNNER_TEMP/ws/build" ]]
+          # The underlay must be sourceable the way colcon-build.sh does it.
+          bash -c 'set +u; source "$0/install/setup.bash"; set -u; echo "AMENT_PREFIX_PATH=$AMENT_PREFIX_PATH"; [[ "$AMENT_PREFIX_PATH" == *abi_smoke* ]]' "$RUNNER_TEMP/ws"
 
   # ---------------------------------------------------------------------------
   # Unit-test locate-library.sh: only the given install prefixes are searched,

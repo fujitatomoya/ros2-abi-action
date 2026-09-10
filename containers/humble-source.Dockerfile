@@ -125,6 +125,10 @@ RUN apt-get update \
 # it for local builds: docker build --build-arg PARALLEL_WORKERS=8 ...
 ARG PARALLEL_WORKERS=2
 
+# Post-build verification / cleanup shared by all source images (see the
+# script for details; ci.yml smoke-tests it on every base image).
+COPY containers/finalize-source-image.sh /usr/local/bin/finalize-source-image.sh
+
 # ---- Build the code in the workspace -----------------------------------------
 # DEVIATION from `colcon build --symlink-install --mixin release`:
 #   * Debug with -g -Og instead of release: abidiff needs full DWARF, and this
@@ -147,13 +151,8 @@ RUN colcon build \
         -DBUILD_TESTING=OFF \
         -DCMAKE_C_FLAGS="-g -Og" \
         -DCMAKE_CXX_FLAGS="-g -Og" \
-    || echo "WARNING: some packages failed to build; see missing.txt in the image" \
-    && test -f install/setup.bash \
-    && colcon list --base-paths src --names-only | sort > packages.txt \
-    && ls install | sort > built.txt \
-    && comm -23 packages.txt built.txt > missing.txt \
-    && echo "Packages not built: $(wc -l < missing.txt)" \
-    && rm -rf build log src packages.txt built.txt
+    || echo "WARNING: some packages failed to build; see missing.txt in the image"; \
+    bash /usr/local/bin/finalize-source-image.sh /opt/ros2_ws
 
 # Consumed by scripts/colcon-build.sh and scripts/sync-upstream.py. GitHub
 # container jobs expose image ENV to every step.
