@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: ShellCheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh test/*.sh
 
   # ---------------------------------------------------------------------------
   # Unit-test the distro/policy resolution logic.
@@ -77,6 +77,222 @@ jobs:
           echo "$out"
           echo "$out" | grep -q "Resolved policy:  strict"
           echo "$out" | grep -q "Resolved fail-on: incompatible"
+      - name: build-mode defaults to binary -> plain distro tag
+        env:
+          INPUT_DISTRO: jazzy
+        run: |
+          out="$(bash scripts/resolve-distro.sh)"
+          echo "$out"
+          echo "$out" | grep -q "Resolved mode:   binary"
+          echo "$out" | grep -q "Resolved image:  ghcr.io/fujitatomoya/ros-abi:jazzy$"
+      - name: build-mode=source -> <distro>-source tag
+        env:
+          INPUT_DISTRO: rolling
+          BUILD_MODE: source
+        run: |
+          out="$(bash scripts/resolve-distro.sh)"
+          echo "$out"
+          echo "$out" | grep -q "Resolved mode:   source"
+          echo "$out" | grep -q "Resolved image:  ghcr.io/fujitatomoya/ros-abi:rolling-source$"
+      - name: unsupported build-mode fails
+        env:
+          INPUT_DISTRO: humble
+          BUILD_MODE: bogus
+        run: |
+          if bash scripts/resolve-distro.sh; then
+            echo "expected failure for unsupported build-mode"; exit 1
+          fi
+      - name: source + scratch -> still the source image, strategy reported
+        env:
+          INPUT_DISTRO: rolling
+          BUILD_MODE: source
+          SOURCE_STRATEGY: scratch
+        run: |
+          out="$(bash scripts/resolve-distro.sh)"
+          echo "$out"
+          echo "$out" | grep -q "Resolved strategy: scratch"
+          echo "$out" | grep -q "Resolved image:  ghcr.io/fujitatomoya/ros-abi:rolling-source$"
+      - name: unsupported source-strategy fails
+        env:
+          INPUT_DISTRO: rolling
+          BUILD_MODE: source
+          SOURCE_STRATEGY: bogus
+        run: |
+          if bash scripts/resolve-distro.sh; then
+            echo "expected failure for unsupported source-strategy"; exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Unit-test parse-related-prs.py: only keyword-labelled lines count, HTML
+  # comments are stripped, same-repo refs are ignored, output is de-duplicated.
+  # ---------------------------------------------------------------------------
+  related-prs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse a representative PR body
+        id: parse
+        env:
+          PR_BODY: |
+            ## Description
+            <!-- Template text: Depends-On: ros2/template#1 must be ignored -->
+            Closes ros2/rclcpp#2555 and is similar to https://github.com/ros2/rclcpp/pull/3000.
+
+            - Depends-On: https://github.com/ros2/rcl/pull/1234
+            Requires: ros2/rmw#567, ROS2/rcutils#89 and ros2/rmw#567 again
+            blocked by #12
+          RELATED_PRS_INPUT: 'ros2/rcl#1234 https://github.com/ros2/rosidl/pull/9'
+        run: python3 scripts/parse-related-prs.py
+      - name: Assert parsed list
+        run: |
+          echo "related-prs=${{ steps.parse.outputs.related-prs }}"
+          [[ "${{ steps.parse.outputs.related-prs }}" == "ros2/rcl#1234 ros2/rmw#567 ros2/rcutils#89 ros2/rosidl#9" ]]
+      - name: Empty body yields empty output
+        id: empty
+        env:
+          PR_BODY: ''
+        run: python3 scripts/parse-related-prs.py
+      - name: Assert empty
+        run: |
+          [[ -z "${{ steps.empty.outputs.related-prs }}" ]]
+
+  # ---------------------------------------------------------------------------
+  # Unit-test sync-upstream.py against local git repositories. The fixture
+  # script (test/sync-upstream-fixture.sh) builds a manifest with repositories
+  # that are unchanged, moved, new, unreachable, the repo under test, one that
+  # duplicates a workspace package, and one with a pull-request ref; plus a
+  # related-PR repository outside the manifest.
+  # ---------------------------------------------------------------------------
+  sync-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install vcstool
+        run: sudo apt-get update && sudo apt-get install -y python3-vcstool python3-yaml
+      - name: Prepare fixture repositories, manifest and snapshot
+        run: bash test/sync-upstream-fixture.sh "$RUNNER_TEMP/fx"
+      - name: incremental source sync with related PRs
+        id: sync
+        env:
+          MODE: source
+          STRATEGY: incremental
+          REPOS_FILE: ${{ runner.temp }}/fx/manifest.repos
+          SNAPSHOT: ${{ runner.temp }}/fx/snapshot.repos
+          EXCLUDE_REPO: ros2/undertest
+          WORKSPACE_SRC: ${{ runner.temp }}/fx/ws/src
+          DEST: ${{ runner.temp }}/fx/ws/src/upstream
+          RELATED_PRS: 'a/related#7 b/outside#3'
+          RELATED_URL_BASE: file://${{ runner.temp }}/fx/
+        run: python3 scripts/sync-upstream.py
+      - name: Assert incremental result
+        env:
+          FX: ${{ runner.temp }}/fx
+        run: |
+          set -euo pipefail
+          echo "changed=${{ steps.sync.outputs.changed }}"
+          echo "rebuild-paths=${{ steps.sync.outputs.rebuild-paths }}"
+          echo "related=${{ steps.sync.outputs.related }}"
+          D="$FX/ws/src/upstream"
+          [[ "${{ steps.sync.outputs.changed }}" == "3" ]]
+          [[ "${{ steps.sync.outputs.rebuild-paths }}" == "$D/a/fresh $D/a/moved $D/a/related" ]]
+          # Whole manifest imported (minus repo under test, unreachable, duplicate).
+          [[ -f "$D/a/unchanged/f" && -f "$D/a/moved/f" && -f "$D/a/fresh/f" && -f "$D/a/related/f" ]]
+          [[ "$(cat "$D/a/moved/f")" == "two" ]]
+          [[ ! -e "$D/ros2" && ! -e "$D/a/gone" && ! -e "$D/a/dup" ]]
+          # Related PR in the manifest: merge ref checked out in place.
+          [[ "$(cat "$D/a/related/f")" == "pr-merge" ]]
+          # Related PR outside the manifest: cloned, head ref fallback.
+          [[ "$(cat "$FX/ws/src/related/outside/f")" == "pr-head" ]]
+          [[ "${{ steps.sync.outputs.related }}" =~ ^a/related#7@[0-9a-f]{40}\ b/outside#3@[0-9a-f]{40}$ ]]
+      - name: scratch strategy imports everything and reports no rebuild paths
+        id: scratch
+        env:
+          MODE: source
+          STRATEGY: scratch
+          REPOS_FILE: ${{ runner.temp }}/fx/manifest.repos
+          EXCLUDE_REPO: ros2/undertest
+          WORKSPACE_SRC: ${{ runner.temp }}/fx/ws2/src
+          DEST: ${{ runner.temp }}/fx/ws2/src/upstream
+        run: |
+          # The unreachable repo makes a scratch import fail, as it should
+          # (nothing to fall back on). Use the manifest without its 4-line entry.
+          sed '/^  a\/gone:/,+3d' "$REPOS_FILE" > "$RUNNER_TEMP/fx/manifest-reachable.repos"
+          REPOS_FILE="$RUNNER_TEMP/fx/manifest-reachable.repos" python3 scripts/sync-upstream.py
+      - name: Assert scratch result
+        env:
+          FX: ${{ runner.temp }}/fx
+        run: |
+          [[ -z "${{ steps.scratch.outputs.rebuild-paths }}" ]]
+          [[ -f "$FX/ws2/src/upstream/a/unchanged/f" && -f "$FX/ws2/src/upstream/a/moved/f" ]]
+      - name: binary mode applies related PRs only
+        id: binary
+        env:
+          MODE: binary
+          EXCLUDE_REPO: ros2/undertest
+          WORKSPACE_SRC: ${{ runner.temp }}/fx/ws3/src
+          RELATED_PRS: 'b/outside#3'
+          RELATED_URL_BASE: file://${{ runner.temp }}/fx/
+        run: python3 scripts/sync-upstream.py
+      - name: Assert binary result
+        env:
+          FX: ${{ runner.temp }}/fx
+        run: |
+          [[ "$(cat "$FX/ws3/src/related/outside/f")" == "pr-head" ]]
+          [[ ! -e "$FX/ws3/src/upstream" ]]
+      - name: related PR pointing at the repo under test is rejected
+        env:
+          MODE: binary
+          EXCLUDE_REPO: ros2/undertest
+          WORKSPACE_SRC: ${{ runner.temp }}/fx/ws4/src
+          RELATED_PRS: 'ros2/undertest#5'
+        run: |
+          if python3 scripts/sync-upstream.py; then
+            echo "expected failure"; exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Unit-test locate-library.sh: only the given install prefixes are searched,
+  # so libraries of dependencies rebuilt in the same workspace are not diffed.
+  # ---------------------------------------------------------------------------
+  locate-library:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare a fake isolated install tree
+        run: |
+          set -euo pipefail
+          for p in rclcpp rclcpp_action rcl; do
+            mkdir -p "$RUNNER_TEMP/ws/install/$p/lib"
+            echo "$p" > "$RUNNER_TEMP/ws/install/$p/lib/lib$p.so"
+          done
+      - name: only the packages under test are matched
+        working-directory: ${{ runner.temp }}/ws
+        env:
+          SONAME: 'lib*.so'
+          SEARCH_DIR: 'install/rclcpp install/rclcpp_action install/does_not_exist'
+          MODE: json
+        run: |
+          out="$(bash "$GITHUB_WORKSPACE/scripts/locate-library.sh")"
+          echo "$out"
+          [[ "$out" == '["librclcpp.so","librclcpp_action.so"]' ]]
+      - name: default search dir is still the whole install tree
+        working-directory: ${{ runner.temp }}/ws
+        env:
+          SONAME: 'lib*.so'
+          MODE: json
+        run: |
+          out="$(bash "$GITHUB_WORKSPACE/scripts/locate-library.sh")"
+          echo "$out"
+          [[ "$out" == '["librcl.so","librclcpp.so","librclcpp_action.so"]' ]]
+      - name: no existing search dir fails
+        working-directory: ${{ runner.temp }}/ws
+        env:
+          SONAME: 'lib*.so'
+          SEARCH_DIR: 'install/nope'
+        run: |
+          if bash "$GITHUB_WORKSPACE/scripts/locate-library.sh"; then
+            echo "expected failure"; exit 1
+          fi
 
   # ---------------------------------------------------------------------------
   # Unit-test colcon-build.sh argument handling with a stub colcon on PATH
@@ -89,10 +305,7 @@ jobs:
       - name: Install stub colcon that records its arguments
         run: |
           mkdir -p "$RUNNER_TEMP/stub-bin"
-          cat > "$RUNNER_TEMP/stub-bin/colcon" <<'EOF'
-          #!/usr/bin/env bash
-          printf '%s\n' "$@" > "${COLCON_ARGS_OUT:?}"
-          EOF
+          cp test/stub-colcon.sh "$RUNNER_TEMP/stub-bin/colcon"
           chmod +x "$RUNNER_TEMP/stub-bin/colcon"
           echo "$RUNNER_TEMP/stub-bin" >> "$GITHUB_PATH"
       - name: single package is passed through unchanged
@@ -124,6 +337,50 @@ jobs:
           if bash scripts/colcon-build.sh; then
             echo "expected failure for empty package list"; exit 1
           fi
+      - name: ROS_ABI_UNDERLAY is sourced ahead of /opt/ros when present
+        env:
+          PACKAGE: rclcpp
+        run: |
+          export COLCON_ARGS_OUT="$RUNNER_TEMP/args-underlay.txt"
+          mkdir -p "$RUNNER_TEMP/underlay"
+          echo 'export ROS_ABI_TEST_UNDERLAY_SOURCED=1' > "$RUNNER_TEMP/underlay/setup.bash"
+          export ROS_ABI_UNDERLAY="$RUNNER_TEMP/underlay/setup.bash"
+          out="$(bash scripts/colcon-build.sh)"
+          echo "$out"
+          echo "$out" | grep -q "Sourced ROS environment: $ROS_ABI_UNDERLAY"
+      - name: incremental source build restricts with --packages-above
+        env:
+          PACKAGE: target
+        run: |
+          set -euo pipefail
+          bash test/incremental-ws-fixture.sh "$RUNNER_TEMP/incr"
+          export WORKSPACE="$RUNNER_TEMP/incr/ws"
+          export AMENT_PREFIX_PATH="$RUNNER_TEMP/incr/prefix"
+          export REBUILD_PATHS="$WORKSPACE/src/upstream/x"
+          export COLCON_ARGS_OUT="$RUNNER_TEMP/args-above.txt"
+          bash scripts/colcon-build.sh
+          cat "$COLCON_ARGS_OUT"
+          # target: repo under test; depx: moved upstream; depz: upstream but
+          # not in the underlay; depy: unchanged and in the underlay -> omitted.
+          tr '\n' ' ' < "$COLCON_ARGS_OUT" | grep -qF -- \
+            '--packages-up-to target --packages-above depx depz target --event-handlers '
+      - name: scratch strategy ignores the underlay, applies no filter, forwards the skip regex
+        env:
+          PACKAGE: target
+          SOURCE_STRATEGY: scratch
+          PACKAGES_SKIP_REGEX: '^(fastrtps|fastcdr)$'
+        run: |
+          set -euo pipefail
+          export WORKSPACE="$RUNNER_TEMP/incr/ws"
+          export COLCON_ARGS_OUT="$RUNNER_TEMP/args-scratch.txt"
+          export ROS_ABI_UNDERLAY="$RUNNER_TEMP/underlay/setup.bash"
+          out="$(bash scripts/colcon-build.sh)"
+          echo "$out"
+          # The image underlay must not be sourced in a scratch build.
+          ! echo "$out" | grep -q "Sourced ROS environment: $ROS_ABI_UNDERLAY"
+          echo "$out" | grep -q "Scratch source build"
+          tr '\n' ' ' < "$COLCON_ARGS_OUT" | grep -qF -- \
+            '--packages-up-to target --packages-skip-regex ^(fastrtps|fastcdr)$ --event-handlers '
 
   # ---------------------------------------------------------------------------
   # End-to-end self-test of the composite action against the toy fixture.

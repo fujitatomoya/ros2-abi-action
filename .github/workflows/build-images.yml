@@ -1,14 +1,26 @@
 name: Build ABI container images
 
 # Builds the self-contained, abidiff-ready ABI images from containers/*.Dockerfile
-# and publishes them to GHCR. Rebuilt weekly so they track the upstream official
-# ros:<distro> images. These GHCR images are the action's default distro ->
-# container map (see check.yml's image-prefix input).
+# and publishes them to GHCR. These GHCR images are the action's default
+# distro -> container map (see check.yml's image-prefix / build-mode inputs):
+#
+#   ros-abi:<distro>         binary underlay (containers/<distro>.Dockerfile);
+#                            tracks the official ros:<distro> image.
+#   ros-abi:<distro>-source  the whole of the distro's ros2.repos built from
+#                            source on plain Ubuntu, following the official
+#                            "Ubuntu (source)" instructions
+#                            (containers/<distro>-source.Dockerfile). For ROS 2
+#                            core repositories; built nightly so the underlay
+#                            stays within a day of the source branches
+#                            (sync-upstream.py covers the remaining gap at CI time).
+#
+# Both flavours are rebuilt nightly; the binary ones are cheap and the source
+# ones need it.
 
 on:
   schedule:
-    # Every Monday 06:00 UTC.
-    - cron: '0 6 * * 1'
+    # Every day 03:00 UTC.
+    - cron: '0 3 * * *'
   workflow_dispatch:
   push:
     branches: [main]
@@ -21,6 +33,60 @@ permissions:
   packages: write
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Source-underlay images: ros-abi:<distro>-source.
+  # ---------------------------------------------------------------------------
+  source:
+    runs-on: ubuntu-latest
+    # A full Debug build of ros2.repos on a 4-vCPU runner takes hours; the
+    # hosted-runner maximum is 6 h.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [humble, jazzy, kilted, lyrical, rolling]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # A Debug build of the whole of ros2.repos needs far more disk than the
+      # hosted runner leaves free by default; drop the preinstalled toolchains.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache /usr/local/share/boost /usr/local/share/powershell \
+            /usr/share/swift /usr/local/julia* /usr/local/lib/node_modules \
+            /usr/share/miniconda /opt/microsoft
+          sudo docker system prune -af
+          sudo apt-get clean
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lower-case owner
+        id: owner
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.distro }}-source
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/${{ matrix.distro }}-source.Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          pull: true
+          tags: ghcr.io/${{ steps.owner.outputs.owner }}/ros-abi:${{ matrix.distro }}-source
+
+  # ---------------------------------------------------------------------------
+  # Binary-underlay images: ros-abi:<distro>.
+  # ---------------------------------------------------------------------------
   build:
     runs-on: ubuntu-latest
     strategy:
