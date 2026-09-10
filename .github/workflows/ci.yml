@@ -294,6 +294,11 @@ jobs:
             base: '26.04'
     container:
       image: docker.io/library/ubuntu:${{ matrix.base }}
+    # Inside a bare container the runner defaults to `sh -e`; the steps below
+    # use bash features (pipefail, [[ ]], source).
+    defaults:
+      run:
+        shell: bash
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
@@ -319,6 +324,9 @@ jobs:
           apt-get install -y ros-dev-tools
           echo "colcon: $(colcon version-check 2>/dev/null | head -1 || true)"
           python3 --version
+          # Ubuntu 26.04 ships the Rust uutils coreutils; record which one we got.
+          sort --version | head -1
+          comm --version | head -1
       - name: colcon build a one-package workspace with the image's flags
         env:
           LANG: en_US.UTF-8

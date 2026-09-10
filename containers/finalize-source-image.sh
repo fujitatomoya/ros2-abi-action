@@ -29,6 +29,7 @@ export LC_ALL=C
 
 diagnostics() {
   echo "--- $ws/install (top level):" >&2
+  # shellcheck disable=SC2012  # human-readable diagnostics, not parsed
   ls -la install 2>&1 | head -40 >&2 || true
   echo "--- colcon log (tail):" >&2
   if [[ -f log/latest_build/logger_all.log ]]; then
@@ -46,10 +47,18 @@ if [[ ! -f install/setup.bash ]]; then
 fi
 
 colcon list --base-paths src --names-only | sort > packages.txt
-ls install | sort > built.txt
-# comm exits non-zero on unsorted input; both inputs come from sort under
-# LC_ALL=C, but --nocheck-order keeps a locale surprise from failing the image.
-comm -23 --nocheck-order packages.txt built.txt > missing.txt
+find install -mindepth 1 -maxdepth 1 -printf '%f\n' | sort > built.txt
+# Set difference in Python rather than comm(1): comm fails when it judges its
+# input unsorted, and that judgement depends on the coreutils implementation
+# and locale (Ubuntu 26.04 ships the Rust uutils coreutils). Python is always
+# present here because colcon needs it.
+python3 - packages.txt built.txt > missing.txt <<'EOF'
+import sys
+packages = set(open(sys.argv[1]).read().split())
+built = set(open(sys.argv[2]).read().split())
+print('\n'.join(sorted(packages - built)))
+EOF
+sed -i '/^$/d' missing.txt
 echo "Packages not built: $(wc -l < missing.txt)"
 if [[ -s missing.txt ]]; then
   sed 's/^/  missing: /' missing.txt
