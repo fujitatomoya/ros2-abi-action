@@ -358,7 +358,13 @@ jobs:
           [[ -f "$RUNNER_TEMP/ws/install/abi_smoke/lib/libabi_smoke.so" ]]
           [[ ! -e "$RUNNER_TEMP/ws/src" && ! -e "$RUNNER_TEMP/ws/build" ]]
           # The underlay must be sourceable the way colcon-build.sh does it.
-          bash -c 'set +u; source "$0/install/setup.bash"; set -u; echo "AMENT_PREFIX_PATH=$AMENT_PREFIX_PATH"; [[ "$AMENT_PREFIX_PATH" == *abi_smoke* ]]' "$RUNNER_TEMP/ws"
+          # abi_smoke is a plain CMake package, so only colcon's own variables
+          # are set (AMENT_PREFIX_PATH is exported by ament packages only).
+          bash -c 'set +u; source "$0/install/setup.bash"; set -u
+            echo "COLCON_PREFIX_PATH=$COLCON_PREFIX_PATH"
+            echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+            [[ "$COLCON_PREFIX_PATH" == "$0/install"* ]]
+            [[ "${LD_LIBRARY_PATH:-}" == *abi_smoke/lib* ]]' "$RUNNER_TEMP/ws"
 
   # ---------------------------------------------------------------------------
   # Unit-test locate-library.sh: only the given install prefixes are searched,
