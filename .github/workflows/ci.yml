@@ -169,13 +169,16 @@ jobs:
       - uses: actions/checkout@v4
       # python3-vcstool lives in the ROS apt repository, not in Ubuntu's, and the
       # runner's system Python is externally managed (PEP 668), so use pipx,
-      # which is preinstalled on hosted runners. PyYAML comes from Ubuntu.
+      # which is preinstalled on hosted runners. Hosted runners point pipx at
+      # /opt/pipx_bin rather than ~/.local/bin, so ask pipx for its bin dir
+      # instead of assuming one. PyYAML comes from Ubuntu.
       - name: Install vcstool
         run: |
           sudo apt-get update && sudo apt-get install -y python3-yaml
           pipx install vcstool
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/vcs" --version
+          bin_dir="$(pipx environment --value PIPX_BIN_DIR)"
+          echo "$bin_dir" >> "$GITHUB_PATH"
+          "$bin_dir/vcs" --version
       - name: Prepare fixture repositories, manifest and snapshot
         run: bash test/sync-upstream-fixture.sh "$RUNNER_TEMP/fx"
       - name: incremental source sync with related PRs
