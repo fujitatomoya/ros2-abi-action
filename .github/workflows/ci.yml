@@ -167,21 +167,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # python3-vcstool lives in the ROS apt repository, not in Ubuntu's, and the
-      # runner's system Python is externally managed (PEP 668), so use pipx,
-      # which is preinstalled on hosted runners. Hosted runners point pipx at
-      # /opt/pipx_bin rather than ~/.local/bin, so ask pipx for its bin dir
-      # instead of assuming one. vcstool 0.3.0 still imports pkg_resources,
-      # which pipx's Python 3.12 venv does not ship, so inject setuptools.
-      # PyYAML comes from Ubuntu.
-      - name: Install vcstool
+      # Install vcstool exactly the way the runtime images get it: the
+      # python3-vcstool Debian package from the ROS apt repository. It is not in
+      # Ubuntu's own archive, and the PyPI release (0.3.0, 2021) imports
+      # pkg_resources, which current setuptools no longer provides, so a pip or
+      # pipx install starts up broken. The ros2-apt-source version is resolved
+      # with the job token: anonymous GitHub API calls from shared hosted-runner
+      # IPs are frequently rate limited.
+      - name: Install vcstool from the ROS apt repository
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sudo apt-get update && sudo apt-get install -y python3-yaml
-          pipx install vcstool
-          pipx inject vcstool setuptools
-          bin_dir="$(pipx environment --value PIPX_BIN_DIR)"
-          echo "$bin_dir" >> "$GITHUB_PATH"
-          "$bin_dir/vcs" --version
+          set -euo pipefail
+          version="$(gh api repos/ros-infrastructure/ros-apt-source/releases/latest --jq .tag_name)"
+          codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")"
+          curl -fsSL -o /tmp/ros2-apt-source.deb \
+            "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${version}/ros2-apt-source_${version}.${codename}_all.deb"
+          sudo dpkg -i /tmp/ros2-apt-source.deb
+          sudo apt-get update
+          sudo apt-get install -y python3-vcstool python3-yaml
+          vcs --version
       - name: Prepare fixture repositories, manifest and snapshot
         run: bash test/sync-upstream-fixture.sh "$RUNNER_TEMP/fx"
       - name: incremental source sync with related PRs

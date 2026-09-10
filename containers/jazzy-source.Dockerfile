@@ -24,9 +24,13 @@ RUN apt-get update && apt-get install -y locales \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Enable required repositories (Universe + ros2-apt-source) ---------------
+# ROS_APT_SOURCE_VERSION may be passed in (build-images.yml resolves it with an
+# authenticated API call); when empty, the documented anonymous lookup is used.
+ARG ROS_APT_SOURCE_VERSION=""
 RUN apt-get update && apt-get install -y software-properties-common curl ca-certificates \
     && add-apt-repository -y universe \
-    && ROS_APT_SOURCE_VERSION=$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F "tag_name" | awk -F'"' '{print $4}') \
+    && ROS_APT_SOURCE_VERSION="${ROS_APT_SOURCE_VERSION:-$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F "tag_name" | awk -F'"' '{print $4}')}" \
+    && test -n "${ROS_APT_SOURCE_VERSION}" \
     && curl -L -o /tmp/ros2-apt-source.deb "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.$(. /etc/os-release && echo ${UBUNTU_CODENAME:-${VERSION_CODENAME}})_all.deb" \
     && dpkg -i /tmp/ros2-apt-source.deb \
     && rm -f /tmp/ros2-apt-source.deb \

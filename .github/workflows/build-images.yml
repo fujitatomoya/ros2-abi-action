@@ -75,11 +75,25 @@ jobs:
         id: owner
         run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
+      # The Dockerfiles default to the documented anonymous API lookup of the
+      # ros2-apt-source version, which is rate limited per IP and unreliable
+      # from shared hosted runners. Resolve it here with the job token instead.
+      - name: Resolve ros2-apt-source version
+        id: apt-source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(gh api repos/ros-infrastructure/ros-apt-source/releases/latest --jq .tag_name)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ros2-apt-source $version"
+
       - name: Build and push ${{ matrix.distro }}-source
         uses: docker/build-push-action@v6
         with:
           context: .
           file: containers/${{ matrix.distro }}-source.Dockerfile
+          build-args: |
+            ROS_APT_SOURCE_VERSION=${{ steps.apt-source.outputs.version }}
           push: ${{ github.event_name != 'pull_request' }}
           pull: true
           tags: ghcr.io/${{ steps.owner.outputs.owner }}/ros-abi:${{ matrix.distro }}-source
