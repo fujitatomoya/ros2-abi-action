@@ -171,11 +171,14 @@ jobs:
       # runner's system Python is externally managed (PEP 668), so use pipx,
       # which is preinstalled on hosted runners. Hosted runners point pipx at
       # /opt/pipx_bin rather than ~/.local/bin, so ask pipx for its bin dir
-      # instead of assuming one. PyYAML comes from Ubuntu.
+      # instead of assuming one. vcstool 0.3.0 still imports pkg_resources,
+      # which pipx's Python 3.12 venv does not ship, so inject setuptools.
+      # PyYAML comes from Ubuntu.
       - name: Install vcstool
         run: |
           sudo apt-get update && sudo apt-get install -y python3-yaml
           pipx install vcstool
+          pipx inject vcstool setuptools
           bin_dir="$(pipx environment --value PIPX_BIN_DIR)"
           echo "$bin_dir" >> "$GITHUB_PATH"
           "$bin_dir/vcs" --version
