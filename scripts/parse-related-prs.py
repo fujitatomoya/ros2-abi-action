@@ -42,26 +42,20 @@ HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def extract(text):
-    refs = []
-    for owner, repo, number in REF_RE.findall(text):
-        ref = f"{owner.lower()}/{repo.lower()}#{int(number)}"
-        if ref not in refs:
-            refs.append(ref)
-    return refs
+    """Normalised 'owner/repo#N' references in text, in order of appearance."""
+    return [f"{owner.lower()}/{repo.lower()}#{int(number)}"
+            for owner, repo, number in REF_RE.findall(text)]
 
 
 def main():
     body = HTML_COMMENT_RE.sub("", os.environ.get("PR_BODY", "") or "")
-    found = []
+    refs = []
     for line in body.splitlines():
         m = KEYWORD_LINE_RE.match(line)
         if m:
-            for ref in extract(m.group(1)):
-                if ref not in found:
-                    found.append(ref)
-    for ref in extract(os.environ.get("RELATED_PRS_INPUT", "") or ""):
-        if ref not in found:
-            found.append(ref)
+            refs.extend(extract(m.group(1)))
+    refs.extend(extract(os.environ.get("RELATED_PRS_INPUT", "") or ""))
+    found = list(dict.fromkeys(refs))  # de-duplicate, keep first occurrence
 
     value = " ".join(found)
     if found:

@@ -13,8 +13,8 @@
 #               names are passed to a single --packages-up-to, so colcon builds
 #               the union of their dependency closures exactly once.
 #   WORKSPACE   Colcon workspace root (default: current directory).
-#   ROS_DISTRO  ROS distro, used to locate the system setup file (optional;
-#               most ROS containers already export it).
+#   ROS_DISTRO  ROS distro, used for rosdep and to locate the system setup
+#               file (default: rolling; ROS containers already export it).
 #   UNDERLAY_SETUP
 #               setup.bash of the underlay to source before building. Defaults
 #               to $ROS_ABI_UNDERLAY, which the ros-abi:<distro>-source images
@@ -32,10 +32,12 @@
 #   SOURCE_STRATEGY
 #               incremental (default) | scratch. See below.
 #   PACKAGES_SKIP_REGEX
-#               colcon --packages-skip-regex applied to the build (check.yml
-#               uses it in incremental source builds to keep DDS vendors on
-#               the underlay copy even when they moved; a Fast DDS rebuild
-#               would dominate the run for no ABI benefit).
+#               colcon --packages-skip-regex applied to the build. When the
+#               variable is unset, incremental source builds default to
+#               DEFAULT_SOURCE_SKIP_REGEX below, which keeps the DDS vendors
+#               on the underlay copy even when their repositories moved (a
+#               Fast DDS rebuild would dominate the run for no ABI benefit).
+#               Set it to an empty string to disable that default.
 #   ROSDEP_SKIP_KEYS
 #               rosdep --skip-keys; defaults to $ROS_ABI_ROSDEP_SKIP_KEYS, which
 #               the source images set to the keys their distro's documentation
@@ -53,10 +55,17 @@
 # taken from the underlay instead of being recompiled. With strategy=scratch
 # no such filter is applied and the whole closure is built from source.
 #
-# The build uses CMAKE_BUILD_TYPE=Debug and "-g -Og" so symbols and DWARF are
-# present while keeping the build reasonably fast.
+# The CMake arguments (Debug, -g -Og, BUILD_TESTING=OFF) are shared with the
+# source-underlay images through scripts/abi-build-flags.sh.
 #
 set -euo pipefail
+
+# shellcheck source=scripts/abi-build-flags.sh
+source "$(dirname "${BASH_SOURCE[0]}")/abi-build-flags.sh"
+
+# Incremental source builds skip these packages by default (see
+# PACKAGES_SKIP_REGEX above). Scratch builds compile them like everything else.
+DEFAULT_SOURCE_SKIP_REGEX='^(fastrtps|fastcdr|foonathan_memory_vendor|cyclonedds|iceoryx_.*)$'
 
 PACKAGE="${PACKAGE:?PACKAGE is required}"
 WORKSPACE="${WORKSPACE:-$PWD}"
@@ -64,8 +73,8 @@ UNDERLAY_SETUP="${UNDERLAY_SETUP:-${ROS_ABI_UNDERLAY:-}}"
 UPSTREAM_DIR="${UPSTREAM_DIR:-src/upstream}"
 REBUILD_PATHS="${REBUILD_PATHS:-}"
 SOURCE_STRATEGY="${SOURCE_STRATEGY:-incremental}"
-PACKAGES_SKIP_REGEX="${PACKAGES_SKIP_REGEX:-}"
 ROSDEP_SKIP_KEYS="${ROSDEP_SKIP_KEYS:-${ROS_ABI_ROSDEP_SKIP_KEYS:-}}"
+ROS_DISTRO="${ROS_DISTRO:-rolling}"
 
 # A scratch source build compiles the whole closure itself and must not see
 # the image's prebuilt underlay (the source images carry no /opt/ros either,
@@ -73,11 +82,6 @@ ROSDEP_SKIP_KEYS="${ROSDEP_SKIP_KEYS:-${ROS_ABI_ROSDEP_SKIP_KEYS:-}}"
 # environment, as the ROS 2 source-build documentation requires).
 if [[ "$SOURCE_STRATEGY" == "scratch" ]]; then
   UNDERLAY_SETUP=""
-fi
-
-SKIP_ARGS=()
-if [[ -n "$PACKAGES_SKIP_REGEX" ]]; then
-  SKIP_ARGS=(--packages-skip-regex "$PACKAGES_SKIP_REGEX")
 fi
 
 # Split PACKAGE on whitespace (spaces, tabs, newlines) into individual names.
@@ -91,6 +95,17 @@ fi
 
 cd "$WORKSPACE"
 
+# An incremental source build (manifest imported under UPSTREAM_DIR, underlay
+# in use) gets the DDS-vendor skip list unless the caller set the variable,
+# even to an empty string.
+if [[ -z "${PACKAGES_SKIP_REGEX+set}" && -d "$UPSTREAM_DIR" && "$SOURCE_STRATEGY" != "scratch" ]]; then
+  PACKAGES_SKIP_REGEX="$DEFAULT_SOURCE_SKIP_REGEX"
+fi
+SKIP_ARGS=()
+if [[ -n "${PACKAGES_SKIP_REGEX:-}" ]]; then
+  SKIP_ARGS=(--packages-skip-regex "$PACKAGES_SKIP_REGEX")
+fi
+
 # Install any package dependencies that are not already present in the image.
 # This runs BEFORE sourcing the underlay: on images without a prebuilt ROS
 # install (or with a partial one), rosdep installs the binary underlay into
@@ -100,7 +115,7 @@ cd "$WORKSPACE"
 if command -v rosdep >/dev/null 2>&1; then
   apt-get update || \
     echo "::warning::apt-get update failed; rosdep install may not resolve packages."
-  rosdep update --rosdistro "${ROS_DISTRO:-rolling}" || \
+  rosdep update --rosdistro "$ROS_DISTRO" || \
     echo "::warning::rosdep update failed; continuing with the image's cached state."
   # Restrict rosdep to the packages that will actually be built (the targets'
   # dependency closure within the workspace). Unrelated packages that happen
@@ -125,7 +140,7 @@ if command -v rosdep >/dev/null 2>&1; then
   # below cannot recover from, so fail fast at the actual cause. -r still lets
   # rosdep continue past individually unresolvable keys.
   rosdep install --from-paths "${rosdep_paths[@]}" --ignore-src -y -r \
-    --rosdistro "${ROS_DISTRO:-rolling}" "${ROSDEP_SKIP_ARGS[@]}"
+    --rosdistro "$ROS_DISTRO" "${ROSDEP_SKIP_ARGS[@]}"
 fi
 
 # Source whichever ROS environment is available in the container. An explicit
@@ -137,7 +152,7 @@ fi
 sourced=""
 for candidate in \
   "$UNDERLAY_SETUP" \
-  "/opt/ros/${ROS_DISTRO:-}/setup.bash" \
+  "/opt/ros/$ROS_DISTRO/setup.bash" \
   "/root/setup_ws/install/setup.bash" \
   "/root/ros2_ws/install/setup.bash"; do
   if [[ -n "$candidate" && -f "$candidate" ]]; then
@@ -162,8 +177,15 @@ fi
 # taken from the sourced underlay.
 in_underlay() {
   local IFS=: p
+  # ament packages register in the ament index of their prefix ...
   for p in ${AMENT_PREFIX_PATH:-}; do
     [[ -f "$p/share/ament_index/resource_index/packages/$1" ]] && return 0
+  done
+  # ... plain CMake packages only in colcon's own index: a per-package prefix
+  # directory (isolated install layout, the default) or a colcon-core marker
+  # (merged layout).
+  for p in ${COLCON_PREFIX_PATH:-}; do
+    [[ -d "$p/$1" || -f "$p/share/colcon-core/packages/$1" ]] && return 0
   done
   return 1
 }
@@ -208,18 +230,11 @@ if command -v ccache >/dev/null 2>&1; then
 fi
 
 echo "Building package(s) '${PACKAGES[*]}' (with up-to dependencies) in $WORKSPACE"
-# BUILD_TESTING=OFF: only the shared library matters for the ABI diff, and
-# skipping tests avoids requiring every test_depend (ament_lint_*, fixtures).
 colcon build \
   --packages-up-to "${PACKAGES[@]}" \
   "${ABOVE_ARGS[@]}" \
   "${SKIP_ARGS[@]}" \
   --event-handlers console_direct+ \
-  --cmake-args \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DBUILD_TESTING=OFF \
-    -DCMAKE_C_FLAGS="-g -Og" \
-    -DCMAKE_CXX_FLAGS="-g -Og" \
-    "${CCACHE_ARGS[@]}"
+  --cmake-args "${ABI_CMAKE_ARGS[@]}" "${CCACHE_ARGS[@]}"
 
 echo "colcon build for '${PACKAGES[*]}' completed."

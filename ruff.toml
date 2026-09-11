@@ -1,0 +1,6 @@
+# Lint configuration for the Python scripts (ci.yml runs `ruff check scripts`).
+target-version = "py310"
+line-length = 120
+
+[lint]
+select = ["E", "F", "W", "EXE"]
