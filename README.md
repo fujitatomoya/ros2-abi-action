@@ -158,20 +158,23 @@ Both strategies run in the same `ros-abi:<distro>-source` image and produce
 the same binaries for the packages under test; the incremental one only skips
 recompiling sources that are byte-identical to what the image already built.
 
-The **nightly image** `ros-abi:<distro>-source` is built by one Dockerfile per
-distro ([`containers/<distro>-source.Dockerfile`](containers/)) that follows
+The **nightly image** `ros-abi:<distro>-source` is built by
+[`containers/source.Dockerfile`](containers/source.Dockerfile), which follows
 the official [Ubuntu (source)](https://docs.ros.org/en/rolling/Installation/Alternatives/Ubuntu-Development-Setup.html)
-instructions for that distro step by step, on the distro's Tier 1 Ubuntu
-release with **no binary ROS 2 installation present**, as those instructions
-require: locale, Universe and `ros2-apt-source`, the documented development
-tool set, `ros2.repos` import, `rosdep install` with the documented
-`--skip-keys`, and `colcon build` of the **entire manifest**, so every
-repository under `ros2/ros2.repos` is available as a source underlay. The
-build uses `Debug -g -Og` instead of the documented release mixin (abidiff
-needs DWARF), turns tests off, and continues past a broken package (listed in
-`/opt/ros2_ws/missing.txt`; such a package is simply rebuilt at PR time). The
-exact commit of every imported repository is recorded in
-`/opt/ros2_ws/snapshot.repos`.
+instructions step by step; the values that differ between distros (Tier 1
+Ubuntu release, development tool set, `rosdep --skip-keys`) come from
+[`containers/distro-args.sh`](containers/distro-args.sh). The build runs with
+**no binary ROS 2 installation present**, as those instructions require:
+locale, Universe and `ros2-apt-source`, the documented development tool set,
+`ros2.repos` import, `rosdep install` with the documented `--skip-keys`, and
+`colcon build` of the **entire manifest**, so every repository under
+`ros2/ros2.repos` is available as a source underlay. The build uses
+`Debug -g -Og` instead of the documented release mixin (abidiff needs DWARF;
+the flags are shared with the PR-time build through
+[`scripts/abi-build-flags.sh`](scripts/abi-build-flags.sh)), turns tests off,
+and continues past a broken package (listed in `/opt/ros2_ws/missing.txt`;
+such a package is simply rebuilt at PR time). The exact commit of every
+imported repository is recorded in `/opt/ros2_ws/snapshot.repos`.
 
 At PR time [`scripts/sync-upstream.py`](scripts/sync-upstream.py) resolves the
 current head of every manifest repository with `git ls-remote` (in parallel),
@@ -244,17 +247,20 @@ time.
 The nightly job builds the source images on 4-vCPU hosted runners, which takes
 hours. On a workstation the same Dockerfile builds much faster; raise the
 colcon worker count to match your cores and push the result to the tag the
-action pulls:
+action pulls. [`containers/build-image.sh`](containers/build-image.sh) passes
+the per-distro build args and tags the image the way `build-images.yml` does:
 
 ```bash
-docker build \
-  -f containers/rolling-source.Dockerfile \
-  --build-arg PARALLEL_WORKERS=8 \
-  -t ghcr.io/fujitatomoya/ros-abi:rolling-source .
+containers/build-image.sh rolling source --build-arg PARALLEL_WORKERS=8
+# equivalent to: docker build -f containers/source.Dockerfile \
+#   --build-arg DISTRO=rolling --build-arg BASE_IMAGE=... (see distro-args.sh) \
+#   -t ghcr.io/fujitatomoya/ros-abi:rolling-source .
 
 echo "$GHCR_TOKEN" | docker login ghcr.io -u fujitatomoya --password-stdin
 docker push ghcr.io/fujitatomoya/ros-abi:rolling-source
 ```
+
+`containers/build-image.sh <distro>` (no flavour) builds the binary image.
 
 `GHCR_TOKEN` is a personal access token with the `write:packages` scope. The
 tag belongs to the existing `ros-abi` package, so it inherits that package's
@@ -419,6 +425,29 @@ release.
 - MSVC / macOS — libabigail is ELF/DWARF only.
 - Replacing `industrial_ci` or `osrf/auto-abi-checker` — those remain useful for
   ABICC-based workflows.
+
+---
+
+## Development
+
+Every check that [`ci.yml`](.github/workflows/ci.yml) runs is a script under
+[`test/`](test/) that also runs locally; the workflow only provides the
+environment (a stub `colcon` for the build script, `vcstool` for the upstream
+sync, a bare Ubuntu container for the source toolchain):
+
+```bash
+shellcheck scripts/*.sh test/*.sh containers/*.sh
+ruff check scripts
+bash test/test-resolve.sh           # resolve-distro.sh, resolve-policy.sh
+bash test/test-related-prs.sh       # parse-related-prs.py
+bash test/test-locate-library.sh    # locate-library.sh
+bash test/test-colcon-build.sh      # colcon-build.sh with stub colcon/rosdep
+bash test/test-sync-upstream.sh     # sync-upstream.py (needs git + vcs)
+bash test/test-source-toolchain.sh  # build-underlay.sh / finalize (needs colcon)
+```
+
+The end-to-end self-test of the composite action (the `selftest` job) needs
+GitHub Actions and is not scripted.
 
 ## License
 

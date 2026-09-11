@@ -2,8 +2,8 @@
 #
 # finalize-source-image.sh
 #
-# Post-build step of the containers/<distro>-source.Dockerfile images, run
-# right after `colcon build` in the workspace root:
+# Post-build step of the ros-abi:<distro>-source images, run by
+# containers/build-underlay.sh right after `colcon build` in the workspace root:
 #
 #   1. verify that colcon produced the prefix-level install/setup.bash the
 #      action sources at PR time (scripts/colcon-build.sh via ROS_ABI_UNDERLAY);
@@ -24,9 +24,6 @@ set -euo pipefail
 ws="${1:-/opt/ros2_ws}"
 cd "$ws"
 
-# Byte-wise, locale-independent ordering for sort and comm.
-export LC_ALL=C
-
 diagnostics() {
   echo "--- $ws/install (top level):" >&2
   # shellcheck disable=SC2012  # human-readable diagnostics, not parsed
@@ -46,19 +43,18 @@ if [[ ! -f install/setup.bash ]]; then
   exit 1
 fi
 
-colcon list --base-paths src --names-only | sort > packages.txt
-find install -mindepth 1 -maxdepth 1 -printf '%f\n' | sort > built.txt
+colcon list --base-paths src --names-only > packages.txt
+find install -mindepth 1 -maxdepth 1 -printf '%f\n' > built.txt
 # Set difference in Python rather than comm(1): comm fails when it judges its
 # input unsorted, and that judgement depends on the coreutils implementation
 # and locale (Ubuntu 26.04 ships the Rust uutils coreutils). Python is always
-# present here because colcon needs it.
+# present here because colcon needs it, and it sorts the result itself.
 python3 - packages.txt built.txt > missing.txt <<'EOF'
 import sys
 packages = set(open(sys.argv[1]).read().split())
 built = set(open(sys.argv[2]).read().split())
-print('\n'.join(sorted(packages - built)))
+sys.stdout.write(''.join(name + '\n' for name in sorted(packages - built)))
 EOF
-sed -i '/^$/d' missing.txt
 echo "Packages not built: $(wc -l < missing.txt)"
 if [[ -s missing.txt ]]; then
   sed 's/^/  missing: /' missing.txt

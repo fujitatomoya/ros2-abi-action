@@ -11,12 +11,16 @@
 #
 # Inputs (environment):
 #   SONAME      Library file name or glob, e.g. "librclcpp.so" or "lib*.so" (required).
-#   SEARCH_DIR  Whitespace-separated directories to search recursively
-#               (default: ./install). The build job passes the install prefixes
-#               of the packages under test (install/<package> ...), so that
-#               dependencies rebuilt from source in the same workspace are not
-#               diffed by accident. Directories that do not exist are skipped
-#               with a warning; at least one must exist.
+#   SEARCH_DIR  Whitespace-separated directories to search recursively.
+#               Directories that do not exist are skipped with a warning; at
+#               least one must exist.
+#   PACKAGE     Whitespace-separated colcon package name(s). When SEARCH_DIR is
+#               not set, the search is restricted to their install prefixes
+#               (install/<package> ..., colcon's default isolated layout), so
+#               that dependencies rebuilt from source in the same workspace
+#               (moved upstream repositories, Depends-On PRs, .repos imports)
+#               are not diffed by accident. This is what the build job passes.
+#               With neither SEARCH_DIR nor PACKAGE, ./install is searched.
 #   MODE        "paths" (default) prints matched absolute paths, one per line.
 #               "json"  prints a JSON array of basenames (for matrix expansion).
 #   COPY_TO     When set (paths mode), matched files are also copied here.
@@ -26,9 +30,18 @@
 set -euo pipefail
 
 SONAME="${SONAME:?SONAME is required}"
-SEARCH_DIR="${SEARCH_DIR:-./install}"
+SEARCH_DIR="${SEARCH_DIR:-}"
+PACKAGE="${PACKAGE:-}"
 MODE="${MODE:-paths}"
 COPY_TO="${COPY_TO:-}"
+
+if [[ -z "$SEARCH_DIR" && -n "$PACKAGE" ]]; then
+  for p in $PACKAGE; do
+    SEARCH_DIR="$SEARCH_DIR install/$p"
+  done
+  SEARCH_DIR="${SEARCH_DIR# }"
+fi
+SEARCH_DIR="${SEARCH_DIR:-./install}"
 
 # Word splitting is intentional: SEARCH_DIR is a list of directories.
 # shellcheck disable=SC2206

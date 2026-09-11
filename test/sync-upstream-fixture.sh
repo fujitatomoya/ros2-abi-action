@@ -22,6 +22,9 @@ cd "$root"
 
 export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid
 export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
+# Ignore the developer's git configuration (commit signing, hooks, default
+# branch) so the fixture builds the same everywhere.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 # make_repo <bare-path> <work-path> [package-name]
 make_repo() {

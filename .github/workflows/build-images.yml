@@ -1,21 +1,22 @@
 name: Build ABI container images
 
-# Builds the self-contained, abidiff-ready ABI images from containers/*.Dockerfile
-# and publishes them to GHCR. These GHCR images are the action's default
-# distro -> container map (see check.yml's image-prefix / build-mode inputs):
+# Builds the self-contained, abidiff-ready ABI images and publishes them to
+# GHCR. These GHCR images are the action's default distro -> container map
+# (see check.yml's image-prefix / build-mode inputs):
 #
-#   ros-abi:<distro>         binary underlay (containers/<distro>.Dockerfile);
+#   ros-abi:<distro>         binary underlay (containers/binary.Dockerfile);
 #                            tracks the official ros:<distro> image.
 #   ros-abi:<distro>-source  the whole of the distro's ros2.repos built from
 #                            source on plain Ubuntu, following the official
 #                            "Ubuntu (source)" instructions
-#                            (containers/<distro>-source.Dockerfile). For ROS 2
+#                            (containers/source.Dockerfile with the per-distro
+#                            values of containers/distro-args.sh). For ROS 2
 #                            core repositories; built nightly so the underlay
 #                            stays within a day of the source branches
 #                            (sync-upstream.py covers the remaining gap at CI time).
 #
 # Both flavours are rebuilt nightly; the binary ones are cheap and the source
-# ones need it.
+# ones need it. containers/build-image.sh builds the same images locally.
 
 on:
   schedule:
@@ -26,6 +27,7 @@ on:
     branches: [main]
     paths:
       - 'containers/**'
+      - 'scripts/abi-build-flags.sh'
       - '.github/workflows/build-images.yml'
 
 permissions:
@@ -33,18 +35,19 @@ permissions:
   packages: write
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Source-underlay images: ros-abi:<distro>-source.
-  # ---------------------------------------------------------------------------
-  source:
+  build:
+    name: ${{ matrix.distro }}${{ matrix.flavor == 'source' && '-source' || '' }}
     runs-on: ubuntu-latest
     # A full Debug build of ros2.repos on a 4-vCPU runner takes hours; the
-    # hosted-runner maximum is 6 h.
-    timeout-minutes: 360
+    # hosted-runner maximum is 6 h. Binary images take minutes.
+    timeout-minutes: ${{ matrix.flavor == 'source' && 360 || 30 }}
     strategy:
       fail-fast: false
       matrix:
+        # Keep in sync with KNOWN_DISTROS in scripts/resolve-distro.sh and
+        # containers/distro-args.sh.
         distro: [humble, jazzy, kilted, lyrical, rolling]
+        flavor: [binary, source]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,6 +55,7 @@ jobs:
       # A Debug build of the whole of ros2.repos needs far more disk than the
       # hosted runner leaves free by default; drop the preinstalled toolchains.
       - name: Free disk space
+        if: matrix.flavor == 'source'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache /usr/local/share/boost /usr/local/share/powershell \
@@ -71,65 +75,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Lower-case owner
-        id: owner
-        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-
-      # The Dockerfiles default to the documented anonymous API lookup of the
-      # ros2-apt-source version, which is rate limited per IP and unreliable
-      # from shared hosted runners. Resolve it here with the job token instead.
-      - name: Resolve ros2-apt-source version
-        id: apt-source
+      # Image tag (lower-case owner) and Dockerfile build args. The source
+      # Dockerfile also gets the ros2-apt-source version resolved here with the
+      # job token: the anonymous API lookup it falls back to is rate limited
+      # per IP and unreliable from shared hosted runners.
+      - name: Resolve tag and build args
+        id: meta
         env:
           GH_TOKEN: ${{ github.token }}
+          DISTRO: ${{ matrix.distro }}
+          FLAVOR: ${{ matrix.flavor }}
         run: |
-          version="$(gh api repos/ros-infrastructure/ros-apt-source/releases/latest --jq .tag_name)"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "ros2-apt-source $version"
+          set -euo pipefail
+          suffix=""
+          [[ "$FLAVOR" == "source" ]] && suffix="-source"
+          echo "tag=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ros-abi:${DISTRO}${suffix}" >> "$GITHUB_OUTPUT"
+          {
+            echo 'build-args<<EOF'
+            if [[ "$FLAVOR" == "source" ]]; then
+              bash containers/distro-args.sh "$DISTRO"
+              echo "ROS_APT_SOURCE_VERSION=$(bash containers/install-ros-apt-source.sh --version-only)"
+            else
+              echo "DISTRO=$DISTRO"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
 
-      - name: Build and push ${{ matrix.distro }}-source
+      - name: Build and push ${{ matrix.distro }}${{ matrix.flavor == 'source' && '-source' || '' }}
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: containers/${{ matrix.distro }}-source.Dockerfile
-          build-args: |
-            ROS_APT_SOURCE_VERSION=${{ steps.apt-source.outputs.version }}
-          push: ${{ github.event_name != 'pull_request' }}
+          file: containers/${{ matrix.flavor }}.Dockerfile
+          build-args: ${{ steps.meta.outputs.build-args }}
+          push: true
           pull: true
-          tags: ghcr.io/${{ steps.owner.outputs.owner }}/ros-abi:${{ matrix.distro }}-source
-
-  # ---------------------------------------------------------------------------
-  # Binary-underlay images: ros-abi:<distro>.
-  # ---------------------------------------------------------------------------
-  build:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        distro: [humble, jazzy, kilted, lyrical, rolling]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Lower-case owner
-        id: owner
-        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push ${{ matrix.distro }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: containers/${{ matrix.distro }}.Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          pull: true
-          tags: ghcr.io/${{ steps.owner.outputs.owner }}/ros-abi:${{ matrix.distro }}
+          tags: ${{ steps.meta.outputs.tag }}

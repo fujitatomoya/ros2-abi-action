@@ -38,14 +38,6 @@ name: ROS 2 ABI Check
 #
 #   Depends-On: ros2/rcl#1234
 
-# Workflow-level constants shared by the jobs below.
-env:
-  # Incremental source builds keep the DDS vendors from the nightly image even
-  # when their repositories moved: rebuilding Fast DDS would dominate the run
-  # and has no bearing on the ABI of the packages under test. Scratch builds
-  # compile them like everything else.
-  SOURCE_SKIP_REGEX: '^(fastrtps|fastcdr|foonathan_memory_vendor|cyclonedds|iceoryx_.*)$'
-
 on:
   workflow_call:
     inputs:
@@ -137,7 +129,9 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Resolve distro -> container image and policy -> fail-on once, up front.
+  # Resolve distro -> container image and the related PRs once, up front.
+  # (The REP-0009 policy is resolved by the composite action in the diff job,
+  # from the distro resolved here.)
   # ---------------------------------------------------------------------------
   resolve:
     runs-on: ubuntu-latest
@@ -146,8 +140,6 @@ jobs:
       build-mode: ${{ steps.distro.outputs.build-mode }}
       source-strategy: ${{ steps.distro.outputs.source-strategy }}
       image: ${{ steps.distro.outputs.image }}
-      policy: ${{ steps.policy.outputs.policy }}
-      fail-on: ${{ steps.policy.outputs.fail-on }}
       related-prs: ${{ steps.related.outputs.related-prs }}
     steps:
       - name: Checkout ros2-abi-action
@@ -165,13 +157,6 @@ jobs:
           BUILD_MODE: ${{ inputs.build-mode }}
           SOURCE_STRATEGY: ${{ inputs.source-strategy }}
         run: bash ._ros2-abi-action/scripts/resolve-distro.sh
-
-      - name: Resolve policy
-        id: policy
-        env:
-          INPUT_POLICY: ${{ inputs.policy }}
-          DISTRO: ${{ steps.distro.outputs.distro }}
-        run: bash ._ros2-abi-action/scripts/resolve-policy.sh
 
       # The PR body is untrusted input: it is passed through the environment,
       # never interpolated into a script, and only yields owner/repo#N tokens.
@@ -248,6 +233,9 @@ jobs:
           restore-keys: |
             abi-ccache-${{ needs.resolve.outputs.distro }}-${{ needs.resolve.outputs.build-mode }}-${{ matrix.side }}-
 
+      # Incremental source builds keep the DDS vendors from the nightly image
+      # even when their repositories moved (colcon-build.sh's default
+      # PACKAGES_SKIP_REGEX); scratch builds compile them like everything else.
       - name: Build
         working-directory: ws
         env:
@@ -255,7 +243,6 @@ jobs:
           ROS_DISTRO: ${{ needs.resolve.outputs.distro }}
           SOURCE_STRATEGY: ${{ needs.resolve.outputs.source-strategy }}
           REBUILD_PATHS: ${{ steps.sync.outputs.rebuild-paths }}
-          PACKAGES_SKIP_REGEX: ${{ needs.resolve.outputs.build-mode == 'source' && needs.resolve.outputs.source-strategy == 'incremental' && env.SOURCE_SKIP_REGEX || '' }}
         run: |
           # In container jobs ${{ github.workspace }} is the host path, but the
           # workspace is mounted at $GITHUB_WORKSPACE inside the container, so
@@ -264,21 +251,18 @@ jobs:
           export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
           bash "$GITHUB_WORKSPACE/._ros2-abi-action/scripts/colcon-build.sh"
 
+      # Only the packages under test are diffed: with PACKAGE set (and no
+      # SEARCH_DIR) locate-library.sh searches their install prefixes only, so
+      # dependencies rebuilt from source in this workspace are not picked up
+      # by the soname glob.
       - name: Locate built library/libraries
         working-directory: ws
         env:
           SONAME: ${{ inputs.soname }}
           PACKAGE: ${{ inputs.package }}
+          SIDE: ${{ matrix.side }}
         run: |
-          # Only the packages under test are diffed. Dependencies that were
-          # rebuilt from source in this workspace (moved upstream repositories,
-          # Depends-On PRs, .repos imports) also live under install/ and must
-          # not be picked up by the soname glob, so search their install
-          # prefixes only (colcon's default isolated layout: install/<package>).
-          dirs=""
-          for p in $PACKAGE; do dirs="$dirs install/$p"; done
-          export SEARCH_DIR="${dirs# }"
-          export COPY_TO="$GITHUB_WORKSPACE/abi-artifacts/${{ matrix.side }}"
+          export COPY_TO="$GITHUB_WORKSPACE/abi-artifacts/$SIDE"
           bash "$GITHUB_WORKSPACE/._ros2-abi-action/scripts/locate-library.sh"
 
       - name: Upload library artifact
@@ -358,17 +342,9 @@ jobs:
           name: lib-pr
           path: lib-pr
 
-      - name: Resolve suppressions path
-        id: suppr
-        env:
-          SUPPRESSIONS: ${{ inputs.suppressions }}
-        run: |
-          path=""
-          if [[ -n "$SUPPRESSIONS" && -f "caller/$SUPPRESSIONS" ]]; then
-            path="caller/$SUPPRESSIONS"
-          fi
-          echo "path=$path" >> "$GITHUB_OUTPUT"
-
+      # The action resolves the REP-0009 policy from the distro and merges the
+      # suppressions itself (a missing suppressions file is reported as a
+      # warning there).
       - name: ABI diff for ${{ matrix.library }}
         uses: ./._ros2-abi-action
         with:
@@ -377,8 +353,8 @@ jobs:
           base-lib: lib-base/${{ matrix.library }}
           head-lib: lib-pr/${{ matrix.library }}
           distro: ${{ needs.resolve.outputs.distro }}
-          policy: ${{ needs.resolve.outputs.policy }}
-          suppressions: ${{ steps.suppr.outputs.path }}
+          policy: ${{ inputs.policy }}
+          suppressions: ${{ inputs.suppressions != '' && format('caller/{0}', inputs.suppressions) || '' }}
           comment-pr: ${{ inputs.comment-pr }}
           label-compat: ${{ inputs.label-compat }}
           label-break: ${{ inputs.label-break }}
