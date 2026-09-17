@@ -37,6 +37,16 @@ name: ROS 2 ABI Check
 # description and are applied to the PR side of the build:
 #
 #   Depends-On: ros2/rcl#1234
+#
+# Pull requests from forks run with a read-only token, so the diff jobs cannot
+# post the comment and labels themselves. Repositories that take fork pull
+# requests set `publish: workflow-run` here and add a second, three-line
+# workflow on report.yml (see there) that publishes the verdicts afterwards.
+#
+# Permissions are inherited from the caller (no `permissions:` block here so
+# callers can narrow them): `contents: read` is enough with
+# `publish: workflow-run`; `publish: inline` also needs `pull-requests: write`
+# and `issues: write`.
 
 on:
   workflow_call:
@@ -101,18 +111,28 @@ on:
         required: false
         type: string
         default: ''
+      publish:
+        description: >-
+          inline (default): every diff job posts its own sticky comment and the
+          labels; works for pull requests from the same repository only.
+          workflow-run: post nothing here and leave it to report.yml, called
+          from a workflow_run workflow, which publishes one comment for all
+          libraries and works for fork pull requests as well.
+        required: false
+        type: string
+        default: 'inline'
       comment-pr:
-        description: 'Post / update a sticky comment on the pull request.'
+        description: 'Post / update a sticky comment on the pull request (publish: inline only).'
         required: false
         type: boolean
         default: true
       label-compat:
-        description: 'Label applied when ABI is compatible / additions-only.'
+        description: 'Label applied when ABI is compatible / additions-only (publish: inline only).'
         required: false
         type: string
         default: 'ABI compatible'
       label-break:
-        description: 'Label applied when ABI is incompatible.'
+        description: 'Label applied when ABI is incompatible (publish: inline only).'
         required: false
         type: string
         default: 'ABI break'
@@ -121,11 +141,6 @@ on:
         required: false
         type: string
         default: 'ghcr.io/fujitatomoya/ros-abi'
-
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -148,6 +163,18 @@ jobs:
           repository: fujitatomoya/ros2-abi-action
           ref: ${{ github.job_workflow_sha }}
           path: ._ros2-abi-action
+
+      - name: Validate publish mode
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          case "$PUBLISH" in
+            inline|workflow-run) echo "publish=$PUBLISH" ;;
+            *)
+              echo "::error::Unknown publish value: '$PUBLISH' (expected: inline | workflow-run)"
+              exit 1
+              ;;
+          esac
 
       - name: Resolve distro and image
         id: distro
@@ -306,8 +333,10 @@ jobs:
           echo "Libraries to diff: $libs"
 
   # ---------------------------------------------------------------------------
-  # Diff each library; one job per matched library so per-library comments
-  # coexist and any incompatible library fails the workflow under strict policy.
+  # Diff each library; one job per matched library so any incompatible library
+  # fails the workflow under strict policy. Each job uploads a report bundle
+  # (abidiff-report.txt + verdict.json) named abidiff-<packages>-<library>;
+  # with publish: workflow-run those bundles are all report.yml needs.
   # ---------------------------------------------------------------------------
   diff:
     needs: [resolve, build, collect]
@@ -344,7 +373,8 @@ jobs:
 
       # The action resolves the REP-0009 policy from the distro and merges the
       # suppressions itself (a missing suppressions file is reported as a
-      # warning there).
+      # warning there). With publish: workflow-run the in-job comment and
+      # labels are switched off; report.yml posts them from the artifacts.
       - name: ABI diff for ${{ matrix.library }}
         uses: ./._ros2-abi-action
         with:
@@ -355,6 +385,6 @@ jobs:
           distro: ${{ needs.resolve.outputs.distro }}
           policy: ${{ inputs.policy }}
           suppressions: ${{ inputs.suppressions != '' && format('caller/{0}', inputs.suppressions) || '' }}
-          comment-pr: ${{ inputs.comment-pr }}
-          label-compat: ${{ inputs.label-compat }}
-          label-break: ${{ inputs.label-break }}
+          comment-pr: ${{ inputs.publish == 'inline' && inputs.comment-pr }}
+          label-compat: ${{ inputs.publish == 'inline' && inputs.label-compat || '' }}
+          label-break: ${{ inputs.publish == 'inline' && inputs.label-break || '' }}

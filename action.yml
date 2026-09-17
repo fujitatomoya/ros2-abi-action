@@ -121,6 +121,7 @@ runs:
       with:
         base-lib: ${{ inputs.base-lib }}
         head-lib: ${{ inputs.head-lib }}
+        library: ${{ inputs.library }}
         suppressions: ${{ steps.suppr.outputs.suppressions }}
         fail-on: ${{ steps.policy.outputs.fail-on }}
         comment-pr: ${{ inputs.comment-pr }}

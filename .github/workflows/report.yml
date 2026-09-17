@@ -1,0 +1,99 @@
+name: ROS 2 ABI Check (report)
+
+# Reusable workflow that publishes the ABI verdicts of a finished check.yml
+# run as one sticky pull-request comment plus labels, from a workflow_run job
+# on the base repository.
+#
+# Why a second workflow: check.yml has to build and diff the pull request's
+# code, so on pull requests from forks GitHub runs it with a read-only token
+# whatever permissions it asks for, and its diff jobs cannot write the comment
+# or labels. This workflow never touches the pull request's code; it runs the
+# base repository's workflow file with a normal token, downloads the report
+# bundles (abidiff-report.txt + verdict.json per library) the check run
+# uploaded, and posts them. The check run's pass / fail status is untouched.
+#
+# Consumers pair it with their check workflow (named "abi" below):
+#
+#   # .github/workflows/abi-report.yml
+#   name: abi-report
+#   on:
+#     workflow_run:
+#       workflows: [abi]          # the `name:` of the check workflow
+#       types: [completed]
+#   jobs:
+#     report:
+#       permissions:
+#         contents: read
+#         pull-requests: write
+#         issues: write
+#         actions: read           # download the check run's artifacts
+#       uses: fujitatomoya/ros2-abi-action/.github/workflows/report.yml@v1
+#
+# and set `publish: workflow-run` on the check.yml call so the diff jobs stop
+# posting by themselves. workflow_run workflows only start firing once the
+# file exists on the default branch.
+
+on:
+  workflow_call:
+    inputs:
+      comment-pr:
+        description: 'Post / update one sticky comment covering every library.'
+        required: false
+        type: boolean
+        default: true
+      label-compat:
+        description: 'Label applied when every library is compatible / additions-only.'
+        required: false
+        type: string
+        default: 'ABI compatible'
+      label-break:
+        description: 'Label applied when any library is incompatible.'
+        required: false
+        type: string
+        default: 'ABI break'
+      artifact-pattern:
+        description: 'Glob selecting the report bundles of the check run (check.yml names them abidiff-<packages>-<library>).'
+        required: false
+        type: string
+        default: 'abidiff-*'
+      marker-suffix:
+        description: 'Sticky-comment marker suffix.'
+        required: false
+        type: string
+        default: 'ros2-abi'
+    outputs:
+      verdict:
+        description: 'Overall verdict (worst across libraries); empty when nothing was published.'
+        value: ${{ jobs.publish.outputs.verdict }}
+      pr-number:
+        description: 'Pull request that was annotated; empty when none could be resolved.'
+        value: ${{ jobs.publish.outputs.pr-number }}
+
+jobs:
+  publish:
+    # Only pull-request runs carry verdicts; pushes and manual runs do not. The
+    # run's conclusion is irrelevant: an incompatible library fails the check
+    # run under strict policy and must still be reported.
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    # One publisher per PR head branch at a time; a newer run cancels an older
+    # one still in flight (the publisher also skips runs whose head the PR has
+    # already moved past).
+    concurrency:
+      group: ros2-abi-report-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
+    outputs:
+      verdict: ${{ steps.publish.outputs.verdict }}
+      pr-number: ${{ steps.publish.outputs.pr-number }}
+    steps:
+      # No checkout: nothing from the pull request is executed here.
+      - name: Publish comment and labels
+        id: publish
+        uses: fujitatomoya/libabigail-action/publish@v0
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          artifact-pattern: ${{ inputs.artifact-pattern }}
+          comment-pr: ${{ inputs.comment-pr }}
+          label-compat: ${{ inputs.label-compat }}
+          label-break: ${{ inputs.label-break }}
+          marker-suffix: ${{ inputs.marker-suffix }}
