@@ -14,6 +14,9 @@ It applies [REP-0009](https://ros.org/reps/rep-0009.html) policy automatically
 from the PR's target branch: **released distros must not break ABI**, while
 **rolling is advisory only**. Results surface as a sticky PR comment, labels,
 and a pass/fail check, so maintainers can decide on backports at a glance.
+Pull requests from forks are covered too: a second, three-line workflow
+publishes their comment and labels after the check run (see
+[Pull requests from forks](#pull-requests-from-forks)).
 
 This is **Action 2** of a two-action design:
 
@@ -69,6 +72,38 @@ ahead of the released binaries (see [Build modes](#build-modes-binary-vs-source)
       build-mode: source
 ```
 
+**Repositories that receive pull requests from forks** (every ROS 2 core
+repository does) add `publish: workflow-run` and a second workflow file, so the
+comment and labels are posted with a token that is allowed to write them:
+
+```yaml
+# .github/workflows/abi.yml            (as above, plus:)
+    permissions:
+      contents: read                    # nothing is written from this workflow
+    with:
+      publish: workflow-run
+```
+
+```yaml
+# .github/workflows/abi-report.yml
+name: abi-report
+on:
+  workflow_run:
+    workflows: [abi]                    # the `name:` of abi.yml
+    types: [completed]
+
+jobs:
+  report:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+    uses: fujitatomoya/ros2-abi-action/.github/workflows/report.yml@v1
+```
+
+See [Pull requests from forks](#pull-requests-from-forks) for why.
+
 ---
 
 ## How it works
@@ -81,7 +116,9 @@ flowchart LR
     B1 --> C[collect<br/>expand soname glob]
     B2 --> C
     C --> D[diff per library<br/>libabigail-action]
-    D --> E[PR comment + label + check]
+    D --> E[pass/fail check<br/>+ report artifacts]
+    E -->|publish: inline<br/>same-repo PRs| F[PR comment + labels<br/>from the diff jobs]
+    E -->|publish: workflow-run<br/>any PR, incl. forks| G[report.yml on workflow_run<br/>one comment + labels]
 ```
 
 1. **resolve** — derive the distro from `GITHUB_BASE_REF` (or the explicit
@@ -102,7 +139,14 @@ flowchart LR
 3. **collect** — expand the `soname` glob into a concrete list of libraries.
 4. **diff** (matrix, one job per library) — download both artifacts, merge the
    default ROS suppression spec with the repo's `.abignore`, and invoke
-   `libabigail-action` with `fail-on` set from the resolved policy.
+   `libabigail-action` with `fail-on` set from the resolved policy. Each job
+   uploads a report bundle (`abidiff-report.txt` + `verdict.json`) named
+   `abidiff-<packages>-<library>`.
+5. **publish** — with `publish: inline` each diff job posts its own sticky
+   comment and the labels (same-repository pull requests only). With
+   `publish: workflow-run` nothing is posted here; the caller's `abi-report`
+   workflow runs [`report.yml`](.github/workflows/report.yml) once the check
+   run completes and posts one comment covering every library, plus the labels.
 
 ---
 
@@ -119,10 +163,23 @@ flowchart LR
 | `suppressions` | no | — | Path to a suppression file relative to the repo root. |
 | `policy` | no | `auto` | `auto` \| `strict` (fail on break) \| `advisory` (warn only). |
 | `upstream-workspace` | no | — | Path to a `.repos` file for additional source deps. |
-| `comment-pr` | no | `true` | Post / update the sticky PR comment. |
-| `label-compat` | no | `ABI compatible` | Label applied when compatible / additions-only. |
-| `label-break` | no | `ABI break` | Label applied when incompatible. |
+| `publish` | no | `inline` | `inline`: diff jobs post comment + labels themselves (same-repo PRs only). `workflow-run`: post nothing here; pair with [`report.yml`](#pull-requests-from-forks). |
+| `comment-pr` | no | `true` | Post / update the sticky PR comment (`publish: inline` only). |
+| `label-compat` | no | `ABI compatible` | Label applied when compatible / additions-only (`publish: inline` only). |
+| `label-break` | no | `ABI break` | Label applied when incompatible (`publish: inline` only). |
 | `image-prefix` | no | `ghcr.io/fujitatomoya/ros-abi` | Container image repository prefix (`<prefix>:<distro>`). |
+
+## Inputs (reusable workflow `report.yml`)
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `comment-pr` | no | `true` | Post / update one sticky comment covering every library. |
+| `label-compat` | no | `ABI compatible` | Label applied when every library is compatible / additions-only. |
+| `label-break` | no | `ABI break` | Label applied when any library is incompatible. |
+| `artifact-pattern` | no | `abidiff-*` | Glob selecting the check run's report bundles. |
+| `marker-suffix` | no | `ros2-abi` | Sticky-comment marker suffix. |
+
+Outputs: `verdict` (worst across libraries) and `pr-number`.
 
 ---
 
@@ -332,9 +389,11 @@ rebuilt per package.
 `soname` accepts a glob (e.g. `lib*.so`). The action expands it against the
 install prefixes of the listed packages (`install/<package>/`, never against
 dependencies that happened to be rebuilt in the same workspace) and runs the
-diff **once per matched library**, each with its own sticky-comment marker so
-they coexist on a single PR. Per-library verdicts are combined: under strict
-policy, if **any** library is incompatible, the workflow fails.
+diff **once per matched library**. Per-library verdicts are combined: under
+strict policy, if **any** library is incompatible, the workflow fails. With
+`publish: inline` every library gets its own sticky comment (distinct marker);
+with `publish: workflow-run` the report workflow posts a single comment with a
+per-library table and applies the labels from the worst verdict.
 
 For example, the `rclcpp` repository with
 `package: rclcpp rclcpp_action rclcpp_components rclcpp_lifecycle` and
@@ -374,19 +433,62 @@ it handles building both versions and multi-library glob expansion for you.
 
 ---
 
+## Pull requests from forks
+
+`check.yml` must build and diff the pull request's code. When that code comes
+from a fork, GitHub runs the `pull_request` workflow with a **read-only**
+`GITHUB_TOKEN` no matter what its `permissions:` block requests, so the diff
+jobs cannot write the comment or the labels; every attempt fails with
+`Resource not accessible by integration`. The ABI verdict and the pass/fail
+check are unaffected, and with `publish: inline` the failure is only a warning
+plus a hint in the job log.
+
+To publish for fork pull requests the write has to move to a workflow that
+never executes the pull request's code. That is `report.yml`:
+
+- it is triggered by `workflow_run` on the base repository when the check
+  workflow completes (whatever its conclusion), and always runs the workflow
+  file from the **default branch** with a normal write token;
+- it does no checkout at all; it downloads the check run's report bundles
+  (`abidiff-report.txt` + `verdict.json` per library, produced by
+  `libabigail-action`) and hands them to
+  [`libabigail-action/publish`](https://github.com/fujitatomoya/libabigail-action#fork-pull-requests);
+- the publisher resolves the pull request from the run's head commit (the
+  `workflow_run` payload lists no `pull_requests` for forks), posts **one**
+  sticky comment covering every library, and applies the labels from the worst
+  verdict. Only an open pull request still at that head is annotated, so an
+  older run never overwrites a newer result;
+- artifact content is treated as data: unknown verdicts become `error`, report
+  files are looked up by basename only, names are displayed as text.
+
+Wiring (see also [Quick start](#quick-start)):
+
+1. In the check workflow, set `publish: workflow-run`. The diff jobs then post
+   nothing, and `contents: read` is all the permission they need.
+2. Add `abi-report.yml` calling `report.yml` on `workflow_run` with
+   `pull-requests: write`, `issues: write` and `actions: read`.
+3. Merge both to the default branch: `workflow_run` workflows only start
+   firing once the file exists there, and the check run of a first-time
+   contributor still needs a maintainer's approval before anything happens.
+
+The check status on the pull request keeps coming from the check workflow; the
+report workflow only adds the comment and the labels.
+
+---
+
 ## Required permissions
 
-For the sticky comment and labels, the calling workflow must grant:
+`check.yml` declares no permissions of its own; it inherits what the caller
+grants, so the caller can be as narrow as the chosen publish mode allows:
 
-```yaml
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-```
+| Mode | Check workflow (`check.yml`) | Report workflow (`report.yml`) |
+| --- | --- | --- |
+| `publish: inline` (same-repo PRs) | `contents: read`, `pull-requests: write`, `issues: write` | — |
+| `publish: workflow-run` (any PR) | `contents: read` | `contents: read`, `pull-requests: write`, `issues: write`, `actions: read` |
 
-If you only want the pass/fail check, set `comment-pr: false` and leave the
-labels at their defaults; then `contents: read` alone is enough.
+If you only want the pass/fail check, set `comment-pr: false`, leave the labels
+at their defaults, and stay on `publish: inline`; `contents: read` alone is
+enough.
 
 ---
 
@@ -397,6 +499,7 @@ updates:
 
 ```yaml
 uses: fujitatomoya/ros2-abi-action/.github/workflows/check.yml@v1
+uses: fujitatomoya/ros2-abi-action/.github/workflows/report.yml@v1
 ```
 
 The libabigail version is pinned via the container image; bumping it is a minor
