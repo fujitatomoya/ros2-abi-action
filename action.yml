@@ -116,13 +116,21 @@ runs:
     - name: Diff ABI (libabigail-action)
       id: diff
       # libabigail-action has no v1 yet; v0 is its floating major tag
-      # (currently -> v0.1.1). Bump when a v1 is published.
+      # (needs >= v0.3.0 for unreferenced-symbols). Bump when a v1 is published.
       uses: fujitatomoya/libabigail-action@v0
       with:
         base-lib: ${{ inputs.base-lib }}
         head-lib: ${{ inputs.head-lib }}
         library: ${{ inputs.library }}
         suppressions: ${{ steps.suppr.outputs.suppressions }}
+        # Both sides are built here with -g, so every declaration of the
+        # package is covered by DWARF. ELF symbols without debug info are
+        # COMDAT template instantiations from libstdc++ (std::variant,
+        # std::function, ...) whose mangled names change whenever a template
+        # argument list changes; suppression specs cannot match them and
+        # abidiff would count a renamed one as a removed symbol, i.e. an ABI
+        # break. They are not part of any ROS package's ABI, so leave them out.
+        unreferenced-symbols: 'false'
         fail-on: ${{ steps.policy.outputs.fail-on }}
         comment-pr: ${{ inputs.comment-pr }}
         label-compat: ${{ inputs.label-compat }}

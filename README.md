@@ -128,7 +128,8 @@ flowchart LR
 2. **build** (matrix `base` + `pr`) — inside the distro container: check out the
    correct ref, optionally `vcs import` a `.repos` file, in source mode import
    `ros2.repos` and detect which repositories moved since the image was built,
-   on the PR side check out the related PRs, `rosdep install`
+   on the PR side check out the related PRs, source the image's underlay (so
+   `rosdep` treats the packages it provides as satisfied), `rosdep install`
    for the packages in the build closure, then
    `colcon build --packages-up-to <package...>` with `-DCMAKE_BUILD_TYPE=Debug`
    and `-g -Og` so DWARF is present. When `package` lists several names, colcon
@@ -373,6 +374,16 @@ covering common noise (`std::` template instantiation churn,
 `detail`/`impl`/`internal` symbols). It is **merged** with the repo's file when
 both exist. The format follows libabigail's suppression spec
 (`man libabigail-suppr-spec`).
+
+Suppressions only reach declarations that carry debug info. libstdc++
+template instantiations that survive in the symbol table without DWARF
+(`std::variant`, `std::function`, … internals, listed by `abidiff` as
+"symbols not referenced by debug info") cannot be matched by any spec, and a
+renamed one would count as a removed symbol, i.e. an ABI break, even for a
+header-only change such as adding an alternative to a `std::variant` member.
+Both sides are always built with `-g` here, so the diff runs with
+`--no-unreferenced-symbols` (`unreferenced-symbols: 'false'` in
+`libabigail-action`) and those symbols are left out.
 
 ---
 

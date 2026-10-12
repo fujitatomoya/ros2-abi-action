@@ -17,6 +17,11 @@
 # C++ standard library template instantiation churn.
 # These types are not part of any ROS package's public ABI; changes to their
 # internal layout come from the toolchain/libstdc++, not from the package.
+#
+# Suppressions only reach declarations that have debug info. libstdc++
+# instantiations that survive in the symbol table without DWARF ("symbols not
+# referenced by debug info" in the abidiff report) are dropped separately by
+# passing unreferenced-symbols: 'false' to libabigail-action (action.yml).
 # ---------------------------------------------------------------------------
 [suppress_type]
   name_regexp = ^std::

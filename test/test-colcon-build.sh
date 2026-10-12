@@ -4,7 +4,8 @@
 # rosdep and apt-get commands on PATH so no ROS installation is needed.
 #
 #   colcon   test/stub-colcon.sh: answers `colcon list`, records other args.
-#   rosdep   records the arguments of `rosdep install` in $ROSDEP_ARGS_OUT.
+#   rosdep   records the arguments of `rosdep install` in $ROSDEP_ARGS_OUT and
+#            the AMENT_PREFIX_PATH it saw in $ROSDEP_ENV_OUT.
 #   apt-get  no-op.
 # shellcheck source=test/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -19,6 +20,9 @@ cat > "$STUB/rosdep" <<'EOF'
 if [[ "${1:-}" == "install" && -n "${ROSDEP_ARGS_OUT:-}" ]]; then
   shift
   printf '%s\n' "$@" > "$ROSDEP_ARGS_OUT"
+fi
+if [[ "${1:-}" == "install" && -n "${ROSDEP_ENV_OUT:-}" ]]; then
+  printf '%s\n' "${AMENT_PREFIX_PATH:-}" > "$ROSDEP_ENV_OUT"
 fi
 EOF
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/apt-get"
@@ -64,6 +68,32 @@ echo 'export ROS_ABI_TEST_UNDERLAY_SOURCED=1' > "$underlay"
 expect_success env COLCON_ARGS_OUT="$TEST_TMP/args-underlay.txt" PACKAGE=rclcpp \
   ROS_ABI_UNDERLAY="$underlay" bash "$BUILD"
 assert_contains "$OUT" "Sourced ROS environment: $underlay"
+ok
+
+begin "an existing underlay is sourced before rosdep so its packages count as provided"
+# The underlay setup extends AMENT_PREFIX_PATH exactly like a real setup.bash;
+# rosdep --ignore-src only treats keys found there (or under --from-paths) as
+# satisfied, so it must already be sourced when rosdep runs.
+underlay_prefix="$TEST_TMP/underlay-prefix"
+underlay2="$underlay_prefix/setup.bash"
+mkdir -p "$underlay_prefix"
+printf 'export AMENT_PREFIX_PATH="%s${AMENT_PREFIX_PATH:+:$AMENT_PREFIX_PATH}"\n' "$underlay_prefix" > "$underlay2"
+rosdep_env="$TEST_TMP/rosdep-env.txt"
+expect_success env COLCON_ARGS_OUT="$TEST_TMP/args-underlay-rosdep.txt" ROSDEP_ENV_OUT="$rosdep_env" \
+  PACKAGE=rclcpp ROS_ABI_UNDERLAY="$underlay2" AMENT_PREFIX_PATH= bash "$BUILD"
+assert_file "$rosdep_env"
+assert_eq "$(cat "$rosdep_env")" "$underlay_prefix"
+# Sourced once, before rosdep; not again afterwards.
+assert_eq "$(grep -c "Sourced ROS environment: $underlay2" <<<"$OUT")" "1"
+ok
+
+begin "without an underlay the environment is probed again after rosdep"
+# Nothing to source before rosdep: the script must not fail, and the warning
+# about the missing setup.bash is emitted once, after the second probe.
+expect_success env COLCON_ARGS_OUT="$TEST_TMP/args-no-underlay.txt" ROSDEP_ENV_OUT="$TEST_TMP/rosdep-env2.txt" \
+  PACKAGE=rclcpp ROS_ABI_UNDERLAY= ROS_DISTRO=nonexistent-distro AMENT_PREFIX_PATH= bash "$BUILD"
+assert_eq "$(cat "$TEST_TMP/rosdep-env2.txt")" ""
+assert_eq "$(grep -c "No ROS setup.bash found" <<<"$OUT")" "1"
 ok
 
 begin "rosdep is restricted to the build closure and gets the skip keys"

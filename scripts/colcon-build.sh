@@ -106,12 +106,48 @@ if [[ -n "${PACKAGES_SKIP_REGEX:-}" ]]; then
   SKIP_ARGS=(--packages-skip-regex "$PACKAGES_SKIP_REGEX")
 fi
 
+# Source whichever ROS environment is available in the container. An explicit
+# underlay (ros-abi:<distro>-source images export ROS_ABI_UNDERLAY pointing at
+# their source overlay, whose setup chains to /opt/ros/<distro>) takes
+# precedence; otherwise probe the binary underlay under /opt/ros or a prebuilt
+# source workspace shipped by ros2dev-style images.
+sourced=""
+source_ros_env() {
+  local candidate
+  for candidate in \
+    "$UNDERLAY_SETUP" \
+    "/opt/ros/$ROS_DISTRO/setup.bash" \
+    "/root/setup_ws/install/setup.bash" \
+    "/root/ros2_ws/install/setup.bash"; do
+    if [[ -n "$candidate" && -f "$candidate" ]]; then
+      # ROS setup scripts reference variables that may be unset
+      # (AMENT_TRACE_SETUP_FILES, COLCON_TRACE, ...), so relax nounset around
+      # the source or it aborts under this script's set -u.
+      set +u
+      # shellcheck disable=SC1090
+      source "$candidate"
+      set -u
+      sourced="$candidate"
+      echo "Sourced ROS environment: $candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# An underlay that already exists is sourced BEFORE rosdep runs, so that
+# `rosdep install --ignore-src` sees the packages it provides (through
+# AMENT_PREFIX_PATH) and does not try to resolve them to ros-<distro>-* apt
+# packages. That matters for source images: a package the underlay provides
+# but which is not part of the rebuilt subset is not under src/, and the
+# source images have no ROS apt packages to fall back on. On images without a
+# prebuilt ROS install nothing is found here; rosdep then installs the binary
+# underlay into /opt/ros/<distro>, which the second probe below picks up.
+source_ros_env || true
+
 # Install any package dependencies that are not already present in the image.
-# This runs BEFORE sourcing the underlay: on images without a prebuilt ROS
-# install (or with a partial one), rosdep installs the binary underlay into
-# /opt/ros/<distro>, which the sourcing step below then picks up. Official
-# Docker library images purge /var/lib/apt/lists at build time, so apt-get
-# update is required for any apt-backed install to succeed.
+# Official Docker library images purge /var/lib/apt/lists at build time, so
+# apt-get update is required for any apt-backed install to succeed.
 if command -v rosdep >/dev/null 2>&1; then
   apt-get update || \
     echo "::warning::apt-get update failed; rosdep install may not resolve packages."
@@ -143,32 +179,9 @@ if command -v rosdep >/dev/null 2>&1; then
     --rosdistro "$ROS_DISTRO" "${ROSDEP_SKIP_ARGS[@]}"
 fi
 
-# Source whichever ROS environment is available in the container. An explicit
-# underlay (ros-abi:<distro>-source images export ROS_ABI_UNDERLAY pointing at
-# their source overlay, whose setup chains to /opt/ros/<distro>) takes
-# precedence; otherwise probe the binary underlay under /opt/ros (possibly just
-# installed by rosdep above) or a prebuilt source workspace shipped by
-# ros2dev-style images.
-sourced=""
-for candidate in \
-  "$UNDERLAY_SETUP" \
-  "/opt/ros/$ROS_DISTRO/setup.bash" \
-  "/root/setup_ws/install/setup.bash" \
-  "/root/ros2_ws/install/setup.bash"; do
-  if [[ -n "$candidate" && -f "$candidate" ]]; then
-    # ROS setup scripts reference variables that may be unset
-    # (AMENT_TRACE_SETUP_FILES, COLCON_TRACE, ...), so relax nounset around
-    # the source or it aborts under this script's set -u.
-    set +u
-    # shellcheck disable=SC1090
-    source "$candidate"
-    set -u
-    sourced="$candidate"
-    echo "Sourced ROS environment: $candidate"
-    break
-  fi
-done
-if [[ -z "$sourced" ]]; then
+# Second probe for images whose binary underlay was only just installed by
+# rosdep above (nothing was found before it ran).
+if [[ -z "$sourced" ]] && ! source_ros_env; then
   echo "::warning::No ROS setup.bash found; relying on the container's default environment."
 fi
 
