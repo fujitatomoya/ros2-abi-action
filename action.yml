@@ -125,7 +125,7 @@ runs:
     - name: Diff ABI (libabigail-action)
       id: diff
       # libabigail-action has no v1 yet; v0 is its floating major tag
-      # (needs >= v0.4.0 for public-headers-regexp). Bump when a v1 is published.
+      # (needs >= v0.3.1 for public-headers-regexp). Bump when a v1 is published.
       uses: fujitatomoya/libabigail-action@v0
       with:
         base-lib: ${{ inputs.base-lib }}
