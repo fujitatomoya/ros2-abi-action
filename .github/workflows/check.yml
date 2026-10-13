@@ -101,6 +101,15 @@ on:
         required: false
         type: string
         default: ''
+      public-headers-regexp:
+        description: >-
+          Only declarations from files whose path matches this regular
+          expression are ABI; the rest is implementation and may change
+          freely (pimpl). The default encodes the ROS 2 layout, where
+          installed headers live under include/. '' turns the filter off.
+        required: false
+        type: string
+        default: '(^|/)include/'
       policy:
         description: 'auto | strict (fail on break) | advisory (warn only).'
         required: false
@@ -385,6 +394,7 @@ jobs:
           distro: ${{ needs.resolve.outputs.distro }}
           policy: ${{ inputs.policy }}
           suppressions: ${{ inputs.suppressions != '' && format('caller/{0}', inputs.suppressions) || '' }}
+          public-headers-regexp: ${{ inputs.public-headers-regexp }}
           comment-pr: ${{ inputs.publish == 'inline' && inputs.comment-pr }}
           label-compat: ${{ inputs.publish == 'inline' && inputs.label-compat || '' }}
           label-break: ${{ inputs.publish == 'inline' && inputs.label-break || '' }}

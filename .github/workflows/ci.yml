@@ -139,6 +139,8 @@ jobs:
             -o out/additions.so
           g++ -g -Og -fPIC -shared -Iinclude -DBREAK_ABI src/counter.cpp \
             -o out/breaking.so
+          g++ -g -Og -fPIC -shared -Iinclude -DPRIVATE_CHANGE src/counter.cpp \
+            -o out/private.so
 
       - name: Additions under strict policy -> additions-only, passes
         id: additions
@@ -157,6 +159,29 @@ jobs:
         run: |
           echo "verdict=$VERDICT"
           [[ "$VERDICT" == "additions-only" ]]
+
+      # The pimpl class in src/counter_impl.hpp changed layout and lost a
+      # member function. src/ is not installed, so under the default
+      # public-headers-regexp this is implementation detail, not a break; with
+      # the std:: entries of ros-default.abignore nothing at all is left to
+      # report, so the verdict is compatible, not merely additions-only.
+      - name: Private-header change under strict policy -> compatible, passes
+        id: private
+        uses: ./
+        with:
+          package: toy-private
+          library: libtoy_ros_pkg.so
+          base-lib: test/fixtures/toy-ros-pkg/out/base.so
+          head-lib: test/fixtures/toy-ros-pkg/out/private.so
+          policy: strict
+          comment-pr: 'false'
+
+      - name: Assert compatible (private change filtered)
+        env:
+          VERDICT: ${{ steps.private.outputs.verdict }}
+        run: |
+          echo "verdict=$VERDICT"
+          [[ "$VERDICT" == "compatible" ]]
 
       - name: Breaking under advisory policy -> incompatible, passes
         id: advisory

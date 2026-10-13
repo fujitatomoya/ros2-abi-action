@@ -140,7 +140,9 @@ flowchart LR
 3. **collect** — expand the `soname` glob into a concrete list of libraries.
 4. **diff** (matrix, one job per library) — download both artifacts, merge the
    default ROS suppression spec with the repo's `.abignore`, and invoke
-   `libabigail-action` with `fail-on` set from the resolved policy. Each job
+   `libabigail-action` with `fail-on` set from the resolved policy and the
+   [public-headers rule](#public-abi-installed-headers) (`include/` is the
+   ABI, `src/` is not). Each job
    uploads a report bundle (`abidiff-report.txt` + `verdict.json`) named
    `abidiff-<packages>-<library>`.
 5. **publish** — with `publish: inline` each diff job posts its own sticky
@@ -162,6 +164,7 @@ flowchart LR
 | `source-strategy` | no | `incremental` | Source mode only. `incremental`: nightly source underlay, recompile only what moved. `scratch`: compile the whole closure from source, no cache. |
 | `related-prs` | no | — | Extra related PRs (`owner/repo#N` or URLs) applied on the PR side, merged with the `Depends-On:` lines of the PR description. |
 | `suppressions` | no | — | Path to a suppression file relative to the repo root. |
+| `public-headers-regexp` | no | `(^|/)include/` | Regexp on source paths; only declarations from matching files are ABI, the rest is implementation (pimpl). `''` turns the rule off. See [Public ABI: installed headers](#public-abi-installed-headers). |
 | `policy` | no | `auto` | `auto` \| `strict` (fail on break) \| `advisory` (warn only). |
 | `upstream-workspace` | no | — | Path to a `.repos` file for additional source deps. |
 | `publish` | no | `inline` | `inline`: diff jobs post comment + labels themselves (same-repo PRs only). `workflow-run`: post nothing here; pair with [`report.yml`](#pull-requests-from-forks). |
@@ -375,6 +378,14 @@ covering common noise (`std::` template instantiation churn,
 both exist. The format follows libabigail's suppression spec
 (`man libabigail-suppr-spec`).
 
+The two type suppressions (`std::`, `detail`/`impl`/`internal`) carry
+`accessed_through = reference-or-pointer`: they apply when such a type is
+reached through a pointer or a reference, not when it is embedded by value.
+A `std::variant` member that gains an alternative grows the public class that
+holds it, and libabigail drops a class diff whose only changed member is
+suppressed, size change included, so without the restriction that break would
+be reported as compatible.
+
 Suppressions only reach declarations that carry debug info. libstdc++
 template instantiations that survive in the symbol table without DWARF
 (`std::variant`, `std::function`, … internals, listed by `abidiff` as
@@ -384,6 +395,43 @@ header-only change such as adding an alternative to a `std::variant` member.
 Both sides are always built with `-g` here, so the diff runs with
 `--no-unreferenced-symbols` (`unreferenced-symbols: 'false'` in
 `libabigail-action`) and those symbols are left out.
+
+---
+
+## Public ABI: installed headers
+
+A ROS 2 package installs `include/`; whatever lives under `src/` never reaches
+a user. A class defined in `src/foo/scheduler.hpp` and only held through a
+pointer (the pimpl idiom, executor internals, opaque handles) can therefore
+change its layout and gain or lose member functions without breaking any
+downstream binary. `abidiff` on its own compares the whole DWARF of the `.so`
+and reports every such change as a break (see
+[issue #15](https://github.com/fujitatomoya/ros2-abi-action/issues/15)).
+
+The action declares that policy once, mechanically, through
+`libabigail-action`'s `public-headers-regexp` input, set to `(^|/)include/`
+by default: a declaration is ABI only when the DWARF records it in a file
+whose path contains `include/`. That is true of the package's own headers in
+the checkout, of every dependency under `install/*/include`, of the source or
+binary underlay (`/opt/ros2_ws/...`, `/opt/ros/<distro>/include`) and of
+system headers, on both sides of the diff. Everything else is implementation:
+
+- a type defined there is ignored when reached through a pointer or a
+  reference (`std::unique_ptr<Impl>`, `Worker *`); embedded **by value** in a
+  public class it still changes that class's layout and is reported;
+- the member functions and static data members of such a class may be added,
+  removed or changed (`abidiff` cannot do this by itself; `libabigail-action`
+  generates a `[suppress_function]` / `[suppress_variable]` pair per private
+  class from `abidw` and adds it to the suppressions).
+
+The generated spec is printed in the diff job's log and uploaded with the
+report as `public-headers.abignore`. Repositories with another layout pass
+their own regexp; `''` turns the rule off.
+
+Two cases the rule does not cover, see
+[Known limitations](#known-limitations): a public class that gains a data
+member in the same change that modifies a private type it points to, and
+free functions declared only in a private header.
 
 ---
 
@@ -437,6 +485,7 @@ their own job. It resolves policy, merges suppressions, and delegates to
     distro: jazzy
     policy: auto
     suppressions: .abignore
+    public-headers-regexp: '(^|/)include/'   # the default; '' turns it off
 ```
 
 The reusable workflow `check.yml` is the recommended entry point for most repos;
@@ -529,6 +578,16 @@ release.
   without `-fvisibility=hidden` + explicit exports may see noisy reports.
 - **Plugin / nodelet-style libraries** without a stable public ABI surface should
   be excluded via `.abignore` or omitted from `soname`.
+- **A public class that gains a data member while a private type it points to
+  also changes is reported as compatible.** libabigail suppresses a diff node
+  whose changed children are all suppressed, and an inserted member or a size
+  change does not keep it alive (its sources call the rule "may be too
+  strong"). Keep layout changes of public classes in their own pull request,
+  or read the `(N filtered out)` counts in the report when a PR touches both.
+- **Free functions declared only in a private header** are still reported when
+  removed: DWARF records their definition in the `.cpp`, so they cannot be told
+  apart from public ones. Suppress them by name in the repository's
+  `.abignore`.
 
 ---
 

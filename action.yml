@@ -30,6 +30,15 @@ inputs:
     description: 'Path to a per-repo suppression file (merged with the ROS default).'
     required: false
     default: ''
+  public-headers-regexp:
+    description: >-
+      Only declarations from files whose path matches this regular expression
+      are ABI; everything else (headers under src/, types local to a .cpp) is
+      implementation and may change freely (pimpl). The default encodes the
+      ROS 2 layout: installed headers live under include/. Set to '' to turn
+      the filter off.
+    required: false
+    default: '(^|/)include/'
   comment-pr:
     description: 'Post / update a sticky comment on the pull request.'
     required: false
@@ -116,7 +125,7 @@ runs:
     - name: Diff ABI (libabigail-action)
       id: diff
       # libabigail-action has no v1 yet; v0 is its floating major tag
-      # (needs >= v0.3.0 for unreferenced-symbols). Bump when a v1 is published.
+      # (needs >= v0.4.0 for public-headers-regexp). Bump when a v1 is published.
       uses: fujitatomoya/libabigail-action@v0
       with:
         base-lib: ${{ inputs.base-lib }}
@@ -131,6 +140,10 @@ runs:
         # abidiff would count a renamed one as a removed symbol, i.e. an ABI
         # break. They are not part of any ROS package's ABI, so leave them out.
         unreferenced-symbols: 'false'
+        # "Installed headers are the public ABI": types defined outside
+        # include/ are ignored when reached through a pointer or reference,
+        # and member functions of such classes may come and go (pimpl).
+        public-headers-regexp: ${{ inputs.public-headers-regexp }}
         fail-on: ${{ steps.policy.outputs.fail-on }}
         comment-pr: ${{ inputs.comment-pr }}
         label-compat: ${{ inputs.label-compat }}
