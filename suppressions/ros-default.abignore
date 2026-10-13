@@ -22,9 +22,18 @@
 # instantiations that survive in the symbol table without DWARF ("symbols not
 # referenced by debug info" in the abidiff report) are dropped separately by
 # passing unreferenced-symbols: 'false' to libabigail-action (action.yml).
+#
+# accessed_through limits the type suppressions below to std:: types reached
+# through a pointer or a reference. A std:: type held BY VALUE in a public
+# class is part of that class's layout: when a std::variant member gains an
+# alternative the class grows, and libabigail would otherwise drop the whole
+# class diff together with the suppressed member (a diff node whose changed
+# children are all suppressed is suppressed itself, a size change does not
+# keep it alive), i.e. report an ABI break as compatible.
 # ---------------------------------------------------------------------------
 [suppress_type]
   name_regexp = ^std::
+  accessed_through = reference-or-pointer
 
 [suppress_function]
   name_regexp = ^std::
@@ -35,9 +44,16 @@
 # ---------------------------------------------------------------------------
 # Internal/private symbols. Names mangled into the ::detail / ::impl namespaces
 # (or leading-underscore reserved names) are implementation details, not API.
+# Same accessed_through reasoning as above: a detail:: type embedded by value
+# in a public class still decides that class's layout.
+#
+# Types defined outside include/ are covered regardless of their name by the
+# public-headers-regexp input (action.yml), which libabigail-action turns into
+# a generated spec next to this one.
 # ---------------------------------------------------------------------------
 [suppress_type]
   name_regexp = (^|::)(detail|impl|internal)::
+  accessed_through = reference-or-pointer
 
 [suppress_function]
   name_regexp = (^|::)(detail|impl|internal)::
