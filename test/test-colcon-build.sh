@@ -77,6 +77,9 @@ begin "an existing underlay is sourced before rosdep so its packages count as pr
 underlay_prefix="$TEST_TMP/underlay-prefix"
 underlay2="$underlay_prefix/setup.bash"
 mkdir -p "$underlay_prefix"
+# The ${AMENT_PREFIX_PATH:+...} expansion is meant for the generated setup.bash,
+# not for this script, hence the single quotes.
+# shellcheck disable=SC2016
 printf 'export AMENT_PREFIX_PATH="%s${AMENT_PREFIX_PATH:+:$AMENT_PREFIX_PATH}"\n' "$underlay_prefix" > "$underlay2"
 rosdep_env="$TEST_TMP/rosdep-env.txt"
 expect_success env COLCON_ARGS_OUT="$TEST_TMP/args-underlay-rosdep.txt" ROSDEP_ENV_OUT="$rosdep_env" \
