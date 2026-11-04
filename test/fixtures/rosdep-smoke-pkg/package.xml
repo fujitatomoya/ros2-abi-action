@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!--
+  Manifest-only package used by test/test-source-toolchain.sh to exercise
+  containers/install-rosdeps.sh with a real rosdep on every base image of the
+  source Dockerfile: xacro is a released ROS package that is not part of
+  ros2.repos, so its key resolves to ros-<distro>-xacro, which the source
+  images must skip rather than install (and which does not exist at all on a
+  freshly supported Ubuntu release).
+-->
+<package format="3">
+  <name>abi_rosdep_smoke</name>
+  <version>0.0.1</version>
+  <description>Smoke-test package for the ros2-abi-action rosdep step.</description>
+  <maintainer email="tomoya.fujita825@gmail.com">Tomoya Fujita</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>cmake</buildtool_depend>
+  <exec_depend>xacro</exec_depend>
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package>

@@ -4,8 +4,10 @@
 # rosdep and apt-get commands on PATH so no ROS installation is needed.
 #
 #   colcon   test/stub-colcon.sh: answers `colcon list`, records other args.
-#   rosdep   records the arguments of `rosdep install` in $ROSDEP_ARGS_OUT and
-#            the AMENT_PREFIX_PATH it saw in $ROSDEP_ENV_OUT.
+#   rosdep   test/stub-rosdep.sh: records the arguments of `rosdep install` in
+#            $ROSDEP_ARGS_OUT and the AMENT_PREFIX_PATH it saw in
+#            $ROSDEP_ENV_OUT; answers `keys` / `resolve` from
+#            $ROSDEP_STUB_KEYS / $ROSDEP_STUB_ROS_KEYS.
 #   apt-get  no-op.
 # shellcheck source=test/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -15,16 +17,7 @@ BUILD=scripts/colcon-build.sh
 STUB="$TEST_TMP/stub-bin"
 mkdir -p "$STUB"
 cp test/stub-colcon.sh "$STUB/colcon"
-cat > "$STUB/rosdep" <<'EOF'
-#!/usr/bin/env bash
-if [[ "${1:-}" == "install" && -n "${ROSDEP_ARGS_OUT:-}" ]]; then
-  shift
-  printf '%s\n' "$@" > "$ROSDEP_ARGS_OUT"
-fi
-if [[ "${1:-}" == "install" && -n "${ROSDEP_ENV_OUT:-}" ]]; then
-  printf '%s\n' "${AMENT_PREFIX_PATH:-}" > "$ROSDEP_ENV_OUT"
-fi
-EOF
+cp test/stub-rosdep.sh "$STUB/rosdep"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/apt-get"
 chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
@@ -113,6 +106,28 @@ for p in src/pkg/target src/upstream/x/depx src/upstream/y/depy src/upstream/z/d
   assert_contains "$recorded" " $p "
 done
 assert_contains "$recorded" ' --ignore-src -y -r --rosdistro kilted --skip-keys fastcdr urdfdom_headers '
+ok
+
+begin "a source build also skips keys that resolve to ros-<distro>-* binaries"
+rosdep_args="$TEST_TMP/rosdep-args-source.txt"
+expect_success env COLCON_ARGS_OUT="$TEST_TMP/args-rosdep-source.txt" ROSDEP_ARGS_OUT="$rosdep_args" \
+  WORKSPACE="$INCR_WS" PACKAGE=target ROS_DISTRO=kilted ROSDEP_SKIP_KEYS='fastcdr' \
+  ROSDEP_STUB_KEYS='xacro libssl-dev' ROSDEP_STUB_ROS_KEYS='xacro' \
+  AMENT_PREFIX_PATH= COLCON_PREFIX_PATH= bash "$BUILD"
+assert_contains "$OUT" "::warning::Skipping rosdep keys that resolve to ros-kilted-* binaries (source build): xacro"
+assert_contains "$(colcon_args "$rosdep_args")" ' --rosdistro kilted --skip-keys fastcdr xacro '
+ok
+
+begin "a binary build leaves such keys to rosdep"
+rosdep_args="$TEST_TMP/rosdep-args-binary.txt"
+# No src/upstream under WORKSPACE: binary mode, where ros-<distro>-* packages
+# are exactly what rosdep is expected to install.
+expect_success env COLCON_ARGS_OUT="$TEST_TMP/args-rosdep-binary.txt" ROSDEP_ARGS_OUT="$rosdep_args" \
+  PACKAGE=target ROS_DISTRO=kilted ROSDEP_SKIP_KEYS='fastcdr' \
+  ROSDEP_STUB_KEYS='xacro libssl-dev' ROSDEP_STUB_ROS_KEYS='xacro' \
+  AMENT_PREFIX_PATH= COLCON_PREFIX_PATH= bash "$BUILD"
+assert_not_contains "$OUT" "::warning::Skipping rosdep keys"
+assert_contains "$(colcon_args "$rosdep_args")" ' --rosdistro kilted --skip-keys fastcdr '
 ok
 
 begin "incremental source build restricts with --packages-above and skips DDS vendors"

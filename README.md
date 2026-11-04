@@ -130,7 +130,8 @@ flowchart LR
    `ros2.repos` and detect which repositories moved since the image was built,
    on the PR side check out the related PRs, source the image's underlay (so
    `rosdep` treats the packages it provides as satisfied), `rosdep install`
-   for the packages in the build closure, then
+   for the packages in the build closure (in source mode, keys that would
+   pull in `ros-<distro>-*` binaries are skipped), then
    `colcon build --packages-up-to <package...>` with `-DCMAKE_BUILD_TYPE=Debug`
    and `-g -Og` so DWARF is present. When `package` lists several names, colcon
    builds the union of their dependency closures in one invocation, so shared
@@ -234,8 +235,15 @@ locale, Universe and `ros2-apt-source`, the documented development tool set,
 the flags are shared with the PR-time build through
 [`scripts/abi-build-flags.sh`](scripts/abi-build-flags.sh)), turns tests off,
 and continues past a broken package (listed in `/opt/ros2_ws/missing.txt`;
-such a package is simply rebuilt at PR time). The exact commit of every
-imported repository is recorded in `/opt/ros2_ws/snapshot.repos`.
+such a package is simply rebuilt at PR time). One more deviation: a rosdep
+key that resolves to a `ros-<distro>-*` binary (a manifest package depending
+on a ROS package outside `ros2.repos`) is skipped and listed in
+`/opt/ros2_ws/skipped-rosdeps.txt` instead of failing the build, because the
+image must not acquire a binary ROS 2 installation and, on a freshly
+supported Ubuntu release, that archive does not exist yet
+([`containers/install-rosdeps.sh`](containers/install-rosdeps.sh)). The exact
+commit of every imported repository is recorded in
+`/opt/ros2_ws/snapshot.repos`.
 
 At PR time [`scripts/sync-upstream.py`](scripts/sync-upstream.py) resolves the
 current head of every manifest repository with `git ls-remote` (in parallel),
@@ -328,7 +336,9 @@ tag belongs to the existing `ros-abi` package, so it inherits that package's
 (public) visibility and the `container:` step of the workflow can pull it
 anonymously. Expect roughly 40 GB of free disk during the build; the final
 image is a few GB. `docker run --rm -it ghcr.io/fujitatomoya/ros-abi:rolling-source
-cat /opt/ros2_ws/missing.txt` lists any package the build did not produce.
+cat /opt/ros2_ws/missing.txt` lists any package the build did not produce,
+and `skipped-rosdeps.txt` next to it any rosdep key skipped for resolving to
+a `ros-<distro>-*` binary.
 
 `abidiff` itself is **not** required in the build image — the diff runs on the
 host runner, where `libabigail-action` installs it. Any image with (or able to
@@ -615,8 +625,9 @@ bash test/test-resolve.sh           # resolve-distro.sh, resolve-policy.sh
 bash test/test-related-prs.sh       # parse-related-prs.py
 bash test/test-locate-library.sh    # locate-library.sh
 bash test/test-colcon-build.sh      # colcon-build.sh with stub colcon/rosdep
+bash test/test-rosdep.sh            # rosdep-ros-keys.sh / install-rosdeps.sh with stub rosdep
 bash test/test-sync-upstream.sh     # sync-upstream.py (needs git + vcs)
-bash test/test-source-toolchain.sh  # build-underlay.sh / finalize (needs colcon)
+bash test/test-source-toolchain.sh  # build-underlay.sh / finalize / install-rosdeps.sh (needs colcon; rosdep case needs root)
 ```
 
 The end-to-end self-test of the composite action (the `selftest` job) needs

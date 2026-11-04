@@ -41,7 +41,9 @@
 #   ROSDEP_SKIP_KEYS
 #               rosdep --skip-keys; defaults to $ROS_ABI_ROSDEP_SKIP_KEYS, which
 #               the source images set to the keys their distro's documentation
-#               skips (fastcdr, the RTI Connext key, urdfdom_headers).
+#               skips (fastcdr, the RTI Connext key, urdfdom_headers). In
+#               source mode, keys that resolve to ros-<distro>-* binaries are
+#               added automatically (see the rosdep step below).
 #
 # Package selection. Every package in the workspace that lies in the targets'
 # dependency closure is a candidate; dependencies not present in the workspace
@@ -60,8 +62,10 @@
 #
 set -euo pipefail
 
+# Absolute, since the script changes into WORKSPACE below.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/abi-build-flags.sh
-source "$(dirname "${BASH_SOURCE[0]}")/abi-build-flags.sh"
+source "$SCRIPT_DIR/abi-build-flags.sh"
 
 # Incremental source builds skip these packages by default (see
 # PACKAGES_SKIP_REGEX above). Scratch builds compile them like everything else.
@@ -74,7 +78,8 @@ UPSTREAM_DIR="${UPSTREAM_DIR:-src/upstream}"
 REBUILD_PATHS="${REBUILD_PATHS:-}"
 SOURCE_STRATEGY="${SOURCE_STRATEGY:-incremental}"
 ROSDEP_SKIP_KEYS="${ROSDEP_SKIP_KEYS:-${ROS_ABI_ROSDEP_SKIP_KEYS:-}}"
-ROS_DISTRO="${ROS_DISTRO:-rolling}"
+# Exported: rosdep-ros-keys.sh (and rosdep itself) read it from the environment.
+export ROS_DISTRO="${ROS_DISTRO:-rolling}"
 
 # A scratch source build compiles the whole closure itself and must not see
 # the image's prebuilt underlay (the source images carry no /opt/ros either,
@@ -167,6 +172,20 @@ if command -v rosdep >/dev/null 2>&1; then
                     --packages-up-to "${PACKAGES[@]}" 2>/dev/null)) || rosdep_paths=()
   if [[ "${#rosdep_paths[@]}" -eq 0 ]]; then
     rosdep_paths=(src)
+  fi
+  # A source build must stay free of binary ROS packages: the source images
+  # carry no /opt/ros, and on a freshly supported Ubuntu release the
+  # ros-<distro>-* archive does not exist yet, so a key resolving to one would
+  # fail the step outright (-r only continues past keys without any rule).
+  # Such keys are skipped (scripts/rosdep-ros-keys.sh, the same rule the
+  # image build applies); a package that genuinely needs one fails in its
+  # CMake configure step with the package named.
+  if [[ -d "$UPSTREAM_DIR" ]]; then
+    ros_keys="$(bash "$SCRIPT_DIR/rosdep-ros-keys.sh" "${rosdep_paths[@]}" | xargs)"
+    if [[ -n "$ros_keys" ]]; then
+      echo "::warning::Skipping rosdep keys that resolve to ros-${ROS_DISTRO}-* binaries (source build): $ros_keys"
+      ROSDEP_SKIP_KEYS="$(xargs <<<"$ROSDEP_SKIP_KEYS $ros_keys")"
+    fi
   fi
   ROSDEP_SKIP_ARGS=()
   if [[ -n "$ROSDEP_SKIP_KEYS" ]]; then

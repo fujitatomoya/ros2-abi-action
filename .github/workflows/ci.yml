@@ -50,6 +50,8 @@ jobs:
         run: bash test/test-locate-library.sh
       - name: colcon-build.sh (stub colcon / rosdep)
         run: bash test/test-colcon-build.sh
+      - name: rosdep-ros-keys.sh / install-rosdeps.sh (stub rosdep)
+        run: bash test/test-rosdep.sh
 
   # ---------------------------------------------------------------------------
   # sync-upstream.py against local git repositories (test/sync-upstream-fixture.sh).
@@ -77,8 +79,10 @@ jobs:
   # Smoke-test the source-image toolchain on every base image in minutes
   # instead of hours: the same install-ros-apt-source.sh and ros-dev-tools
   # setup as containers/source.Dockerfile, then build-underlay.sh on a one-file
-  # CMake package. Catches toolchain drift on a new Ubuntu release (Python,
-  # EmPy, colcon, coreutils) before the nightly image build hits it.
+  # CMake package and install-rosdeps.sh on a manifest depending on a ROS
+  # package outside the workspace. Catches toolchain drift on a new Ubuntu
+  # release (Python, EmPy, colcon, coreutils, the ros-<distro>-* archive)
+  # before the nightly image build hits it.
   # ---------------------------------------------------------------------------
   source-toolchain:
     runs-on: ubuntu-latest
@@ -108,6 +112,7 @@ jobs:
     env:
       DEBIAN_FRONTEND: noninteractive
       LANG: en_US.UTF-8
+      ROS_DISTRO: ${{ matrix.distro }}
     steps:
       - uses: actions/checkout@v4
       - name: Set locale and enable the ROS 2 apt repository (as the Dockerfile does)
@@ -116,7 +121,7 @@ jobs:
         run: |
           bash containers/install-ros-apt-source.sh
           apt-get install -y ros-dev-tools
-      - name: build-underlay.sh / finalize-source-image.sh on a one-package workspace
+      - name: build-underlay.sh / finalize-source-image.sh / install-rosdeps.sh on one-package workspaces
         run: bash test/test-source-toolchain.sh
 
   # ---------------------------------------------------------------------------

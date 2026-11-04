@@ -2,11 +2,14 @@
 #
 # Smoke test of the source-image toolchain: containers/build-underlay.sh (and
 # through it containers/finalize-source-image.sh) on a one-file plain CMake
-# package, exactly as containers/source.Dockerfile runs them. ci.yml executes
-# this on every base image of the source images after
-# containers/install-ros-apt-source.sh and ros-dev-tools, so toolchain drift on
-# a new Ubuntu release (Python, EmPy, colcon, coreutils) is caught in minutes
-# instead of in the nightly image build. Requires colcon and a C compiler.
+# package, exactly as containers/source.Dockerfile runs them, and
+# containers/install-rosdeps.sh on a manifest that depends on a ROS package
+# outside the workspace. ci.yml executes this on every base image of the
+# source images after containers/install-ros-apt-source.sh and ros-dev-tools,
+# so toolchain drift on a new Ubuntu release (Python, EmPy, colcon, coreutils,
+# the ros-<distro>-* archive) is caught in minutes instead of in the nightly
+# image build. Requires colcon and a C compiler; the rosdep case additionally
+# needs rosdep, root (apt) and ROS_DISTRO, and is skipped otherwise.
 # shellcheck source=test/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$REPO_ROOT"
@@ -66,3 +69,24 @@ mkdir -p "$WS3/src" "$WS3/install"
 expect_failure bash containers/finalize-source-image.sh "$WS3"
 assert_contains "$OUT" "colcon did not generate install/setup.bash"
 ok
+
+begin "install-rosdeps.sh skips a key that resolves to a ros-<distro>-* binary"
+if command -v rosdep >/dev/null && [[ "$EUID" -eq 0 && -n "${ROS_DISTRO:-}" ]]; then
+  # xacro is released in every distro but not part of ros2.repos: the key
+  # must be skipped (on a freshly supported Ubuntu release the package does
+  # not even exist), and the step must still succeed.
+  WS4="$TEST_TMP/ws4"
+  mkdir -p "$WS4/src"
+  cp -r test/fixtures/rosdep-smoke-pkg "$WS4/src/"
+  expect_success env ROSDEP_SKIP_KEYS='fastcdr urdfdom_headers' \
+    bash containers/install-rosdeps.sh "$WS4"
+  assert_contains "$OUT" "  skipped: xacro"
+  assert_contains "$OUT" "#All required rosdeps installed successfully"
+  assert_eq "$(cat "$WS4/skipped-rosdeps.txt")" "xacro"
+  if dpkg -s "ros-$ROS_DISTRO-xacro" >/dev/null 2>&1; then
+    fail "ros-$ROS_DISTRO-xacro was installed into a source-only environment"
+  fi
+  ok
+else
+  echo "skip [$CASE]: needs rosdep, root and ROS_DISTRO"
+fi

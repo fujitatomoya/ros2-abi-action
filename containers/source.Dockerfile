@@ -26,6 +26,10 @@
 #                                scripts/sync-upstream.py at CI time
 #   /opt/ros2_ws/ros2.repos      the manifest that was imported
 #   /opt/ros2_ws/missing.txt     packages the build did not produce, if any
+#   /opt/ros2_ws/skipped-rosdeps.txt
+#                                rosdep keys that were skipped because they
+#                                resolve to ros-<distro>-* binaries, if any
+#                                (see install-rosdeps.sh)
 #   /opt/ros-abi/                the scripts below, mirroring the repository
 #
 # There is deliberately NO binary ROS 2 installation in this image: the
@@ -73,9 +77,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     ROS_DISTRO=${DISTRO}
 
 # The scripts shared with ci.yml, laid out as in the repository so that
-# build-underlay.sh finds ../scripts/abi-build-flags.sh.
+# build-underlay.sh and install-rosdeps.sh find their helpers in ../scripts/.
 COPY containers/*.sh /opt/ros-abi/containers/
-COPY scripts/abi-build-flags.sh /opt/ros-abi/scripts/
+COPY scripts/abi-build-flags.sh scripts/rosdep-ros-keys.sh /opt/ros-abi/scripts/
 
 RUN test -n "$ROSDEP_SKIP_KEYS" \
     || { echo "ROSDEP_SKIP_KEYS build arg is required; build with containers/build-image.sh <distro> source"; exit 1; }
@@ -108,11 +112,11 @@ RUN mkdir -p src \
     && vcs export --exact src > snapshot.repos
 
 # ---- Install dependencies using rosdep ---------------------------------------
-RUN apt-get update \
-    && rosdep init \
-    && rosdep update \
-    && rosdep install --from-paths src --ignore-src -y \
-         --skip-keys "${ROSDEP_SKIP_KEYS}" \
+# DEVIATION documented in install-rosdeps.sh: on top of the documented
+# --skip-keys, keys that resolve to ros-<distro>-* binaries are skipped (and
+# listed in skipped-rosdeps.txt), since this image has no binary ROS 2
+# installation and must not acquire one.
+RUN bash /opt/ros-abi/containers/install-rosdeps.sh /opt/ros2_ws \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Build the code in the workspace -----------------------------------------

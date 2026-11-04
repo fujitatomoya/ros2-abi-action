@@ -28,6 +28,7 @@ on:
     paths:
       - 'containers/**'
       - 'scripts/abi-build-flags.sh'
+      - 'scripts/rosdep-ros-keys.sh'
       - '.github/workflows/build-images.yml'
 
 permissions:
